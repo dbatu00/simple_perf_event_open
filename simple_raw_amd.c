@@ -77,28 +77,28 @@ int main(int argc, char** argv) {
 
 	pe.type=PERF_TYPE_RAW;
 	pe.size=sizeof(struct perf_event_attr);
-	pe.config=(1ULL<<19);
+	pe.config=0x00C1;
 
 	/* 1 million.  Tried 100k but that was too short on */
 	/* faster machines, likely triggered overflow while */
 	/* poll still was being handled?                    */
 	pe.sample_period=100000;
-	pe.sample_type = PERF_SAMPLE_RAW | PERF_SAMPLE_CPU;
-	pe.disabled = 1;
-	pe.inherit = 1;
-	pe.exclude_kernel=0;
+	pe.sample_type = PERF_SAMPLE_RAW;
+	pe.disabled = 0;
+	pe.inherit = 0;
+	pe.exclude_kernel=1;
 	pe.exclude_user=0;
-	pe.exclude_hv=0;
+	pe.exclude_hv=1;
 	pe.exclude_guest=0;
 	pe.exclude_idle=0;
 	pe.exclude_host=0;
 	pe.pinned=0;
-	pe.precise_ip=1;
-	pe.mmap=1;
-	pe.comm=1;
-	pe.task=1;
-	pe.sample_id_all=1;
-	pe.comm_exec=1;
+	pe.precise_ip=0;
+	pe.mmap=0;
+	pe.comm=0;
+	pe.task=0;
+	pe.sample_id_all=0;
+	pe.comm_exec=0;
 	pe.read_format=0;
 	//pe.mmap_data=256;
 	//pe.wakeup_events=1;
