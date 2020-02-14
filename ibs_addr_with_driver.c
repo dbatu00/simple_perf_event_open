@@ -140,6 +140,7 @@ Linux interface
 
 #define RAW_IBS_FETCH   1
 #define RAW_IBS_OP      2
+#define BUFFER_SIZE_B   (1 << 20)
 
 /* Global vars as I'm lazy */
 static int count_total=0;
@@ -148,7 +149,8 @@ static long sample_type;
 static long read_format;
 static int quiet;
 static long long prev_head;
-
+static int buffer_size = 0;
+int op_cnt_max_to_set = 0;
 
 
 struct validate_values {
@@ -263,6 +265,8 @@ int main(int argc, char **argv) {
 	int cpu;
 	char filename [64];
 	int * fds = calloc(num_cpus, sizeof(int));
+	buffer_size = BUFFER_SIZE_B;
+	op_cnt_max_to_set = 10000;
 	for (cpu = 0; cpu < num_cpus; cpu++) {
 		sprintf(filename, "/dev/cpu/%d/ibs/op", cpu);
 		fds[cpu] = open(filename, O_RDONLY | O_NONBLOCK);
