@@ -72,7 +72,7 @@ static void insitu_handler(int signum,siginfo_t *oh, void *blah) {
 	printf("waiting there by thread %ld\n", syscall(SYS_gettid));
 	pthread_mutex_lock(&lock);
 	sender_counter++;
-	if (sender_counter != overflow_count) {
+	if (sender_counter > overflow_count) {
         	printf("Waiting on condition variable cond1\n");
         	pthread_cond_wait(&cond, &lock);
     	}
@@ -117,7 +117,7 @@ void* thread_func(void* args) {
 	   pe.bp_type=HW_BREAKPOINT_W;
 	   pe.bp_addr=(unsigned long)&test_var1;
 	   pe.bp_len=sizeof(int);
-	   pe.sample_period=10;
+	   pe.sample_period=1;
            pe.sample_type=PERF_SAMPLE_IP;
            pe.wakeup_events=1;
 	   pe.disabled=1;
@@ -193,8 +193,10 @@ void* thread_func(void* args) {
 	   //bp_total_count += bp_counter;
 	   close(fd1);
 	    //}
-	   printf("counter value: %d overflow_count: %d in thread %ld\n", bp_counter, overflow_count, tid);
+	   //printf("counter value: %d overflow_count: %d in thread %ld\n", bp_counter, overflow_count, tid);
     }
+    if(tid == 2 || tid == 4)
+	    printf("overflow_count: %d, sender_counter: %d, in thread %ld\n", overflow_count, sender_counter, tid);
     printf("passed barrier\n");
 
     return NULL;
