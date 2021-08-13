@@ -96,7 +96,9 @@ int main(int argc, char** argv) {
 	pe.pinned=1;
 	pe.exclude_kernel=1;
 	pe.exclude_hv=1;
-	pe.wakeup_events=1;
+	pe.watermark=0;
+	pe.wakeup_events=999999;
+	pe.precise_ip=2;
 
 	fd1=perf_event_open(&pe,0,-1,-1,0);
 	if (fd1<0) {
@@ -121,7 +123,7 @@ int main(int argc, char** argv) {
 	}
 
 	int sum = 0, val = 1;
-	for(int i = 0; i < 100000000; i++) {
+	for(int i = 0; i < 200000000; i++) {
 		__asm__ __volatile__ ("movl %1, %%ebx;"
                                 "addl %%ebx, %0;"
                                 : "=m" (sum)
