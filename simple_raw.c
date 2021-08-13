@@ -97,7 +97,7 @@ int main(int argc, char** argv) {
 	pe.exclude_kernel=1;
 	pe.exclude_hv=1;
 	pe.watermark=0;
-	pe.wakeup_events=999999;
+	pe.wakeup_events=4;
 	pe.precise_ip=2;
 
 	fd1=perf_event_open(&pe,0,-1,-1,0);
