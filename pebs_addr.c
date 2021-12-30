@@ -127,7 +127,7 @@ Linux interface
 #include <asm/perf_regs.h>
 #endif
 
-#define SAMPLE_FREQUENCY 100000
+#define SAMPLE_PERIOD 100000
 
 #define MMAP_DATA_SIZE 8
 
@@ -182,6 +182,7 @@ static void our_handler(int signum, siginfo_t *info, void *uc) {
 
 	ret=ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
 
+#if 0
 	prev_head=perf_mmap_read(our_mmap,MMAP_DATA_SIZE,prev_head,
 		sample_type,read_format,
 		0, /* reg_mask */
@@ -189,7 +190,7 @@ static void our_handler(int signum, siginfo_t *info, void *uc) {
 		quiet,
 		NULL, /* events read */
 		0);
-
+#endif
 	count_total++;
 
 	ret=ioctl(fd, PERF_EVENT_IOC_REFRESH, 1);
@@ -238,7 +239,7 @@ int main(int argc, char **argv) {
 	 //pe.config = 0x5382d0;
 	pe.config = 0x82d0;
 
-        pe.sample_period=SAMPLE_FREQUENCY;
+        pe.sample_period=SAMPLE_PERIOD;
         pe.sample_type=sample_type;
 
         pe.read_format=read_format;
@@ -247,7 +248,7 @@ int main(int argc, char **argv) {
         pe.exclude_kernel=1;
         pe.exclude_hv=1;
         pe.wakeup_events=1;
-	pe.precise_ip=1;
+	pe.precise_ip=2;
 
 	//arch_adjust_domain(&pe,quiet);
 
@@ -281,13 +282,44 @@ int main(int argc, char **argv) {
 
        //naive_matrix_multiply(quiet);
        int sum = 0, val = 1;
-        for(int i = 0; i < 100000000; i++) {
-                __asm__ __volatile__ ("movl %1, %%ebx;"
+        //for(int i = 0; i < 100000000; i++) {
+#if 0
+	__asm__ __volatile__ ("movl %1, %%ebx;"
                                 "addl %%ebx, %0;"
                                 : "=m" (sum)
                                 : "r" (val)
-                                : "%ebx");
+                                : "%ebx");	
+#endif
+       __asm__ __volatile__ (
+		"movq $100000000, %%rcx;"
+                "movl $1, %%ebx;"
+                "loop0:;"
+                "addl %%ebx, %0;"
+		"subq $1, %%rcx;"
+                "cmpq $0, %%rcx;"
+                "jne loop0;"
+                : "=m" (sum)
+                :
+                : "%ebx", "%ecx");
+        //}
+
+#if  0
+		__asm__ __volatile__ ("movq $10000000000, %%rcx\\n\\t"
+                "movl $1, %%ebx\\n\\t"
+                "loop0:\\n\\t"
+                "movl %0, %%ebx\\n\\t"
+{% for i in range(iter_count) %}
+                {{ statement_ext }}
+{% endfor %}
+                "subq $1, %%rcx\\n\\t"
+		"cmpq $0, %%rcx\\n\\t "
+		"jne loop0\\n\\t"
+                : "=m" (val)
+                :
+                : "memory", "%ebx", "%ecx"
+            );
         }
+#endif
 
 	ret=ioctl(fd, PERF_EVENT_IOC_REFRESH,0);
 
