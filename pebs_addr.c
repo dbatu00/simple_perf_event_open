@@ -152,11 +152,15 @@ struct validate_values {
         unsigned long branch_high;
 };
 
+
+
 int test_quiet(void) {
 
         if (getenv("TESTS_QUIET")!=NULL) return 1;
         return 0;
 }
+
+
 
 long long perf_mmap_read(
                 void *our_mmap, int mmap_size, long long prev_head,
@@ -165,14 +169,21 @@ long long perf_mmap_read(
                 int quiet, int *events_read,
                 int raw_type );
 
-long perf_event_open(struct perf_event_attr *hw_event, pid_t pid,
-         int cpu, int group_fd, unsigned long flags)
+
+
+long perf_event_open(struct perf_event_attr *hw_event, 
+					pid_t pid,
+         			int cpu, 
+					int group_fd, 
+					unsigned long flags)
 {
    int ret;
 
    ret = syscall(__NR_perf_event_open, hw_event, pid, cpu, group_fd, flags);
    return ret;
 }
+
+
 
 static void our_handler(int signum, siginfo_t *info, void *uc) {
 
@@ -181,16 +192,7 @@ static void our_handler(int signum, siginfo_t *info, void *uc) {
 	int fd = info->si_fd;
 
 	ret=ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
-
-#if 0
-	prev_head=perf_mmap_read(our_mmap,MMAP_DATA_SIZE,prev_head,
-		sample_type,read_format,
-		0, /* reg_mask */
-		NULL, /*validate */
-		quiet,
-		NULL, /* events read */
-		0);
-#endif
+	
 	count_total++;
 
 	ret=ioctl(fd, PERF_EVENT_IOC_REFRESH, 1);
@@ -200,57 +202,70 @@ static void our_handler(int signum, siginfo_t *info, void *uc) {
 }
 
 
-int main(int argc, char **argv) {
+
+
+int main(int argc, char **argv) 
+{
 
 	int ret;
-	int fd;
+	int fd,fd2;
 	int mmap_pages=1+MMAP_DATA_SIZE;
 
-	struct perf_event_attr pe;
-
-	struct sigaction sa;
 	char test_string[]="Testing pebs latency...";
 
 	quiet=test_quiet();
 
-	if (!quiet) printf("This tests the intel PEBS latency.\n");
+	if (!quiet) 
+		printf("This tests the intel PEBS latency.\n");
 
-	        memset(&sa, 0, sizeof(struct sigaction));
-        sa.sa_sigaction = our_handler;
-        sa.sa_flags = SA_SIGINFO;
+/////////////////////////SIGNAL//////////////////////////
 
-        if (sigaction( SIGIO, &sa, NULL) < 0) {
-                fprintf(stderr,"Error setting up signal handler\n");
-                exit(1);
-        }
+	struct sigaction sa;
 
-        /* Set up Instruction Event */
+	memset(&sa, 0, sizeof(struct sigaction));
+	sa.sa_sigaction = our_handler;
+	sa.sa_flags = SA_SIGINFO;
 
-        memset(&pe,0,sizeof(struct perf_event_attr));
+	if (sigaction( SIGIO, &sa, NULL) < 0) 
+	{
+			fprintf(stderr,"Error setting up signal handler\n");
+			exit(1);
+	}
 
-	sample_type=PERF_SAMPLE_IP|PERF_SAMPLE_WEIGHT|PERF_SAMPLE_ADDR;
+
+/////////////////////////SIGNAL//////////////////////////
+
+
+
+	/* Set up Instruction Event */
+////////////////////PERF EVENT/////////////////////////////////
+	struct perf_event_attr pe,pe2;
+
+	memset(&pe,0,sizeof(struct perf_event_attr));
+	memset(&pe2,0,sizeof(struct perf_event_attr));
+
+	sample_type=PERF_SAMPLE_IP|PERF_SAMPLE_ADDR;
 	read_format=0;
 
-        pe.type=PERF_TYPE_RAW;
-        pe.size=sizeof(struct perf_event_attr);
-        //pe.config=PERF_COUNT_HW_INSTRUCTIONS;
+	pe.type=PERF_TYPE_RAW;					pe2.type=PERF_TYPE_RAW;
+	pe.size=sizeof(struct perf_event_attr); pe2.size=sizeof(struct perf_event_attr);
+	
 
-	 /* MEM_UOPS_RETIRED:ALL_STORES */
-	 //pe.config = 0x5382d0;
-	pe.config = 0x82d0;
+	//MEM_UOPS_RETIRED:ALL_STORES	 MEM_UOPS_RETIRED:ALL_LOADS 
+ 	//pe.config = 0x5382d0;			 pe.config = 0x5381d0;
+	//pe.config = 0x82d0;			 pe.config = 0x81d0;	
+	pe.config = 0x82d0; 			 pe2.config = 0x82d0;
 
-        pe.sample_period=SAMPLE_PERIOD;
-        pe.sample_type=sample_type;
+	pe.sample_period=SAMPLE_PERIOD;  pe2.sample_period=SAMPLE_PERIOD; 
+	pe.sample_type=sample_type;		 pe2.sample_type=sample_type;
+	pe.read_format=read_format; 	 pe2.read_format=read_format;
+	pe.disabled=1;					 pe2.disabled=1;
+	pe.pinned=1;					 pe2.pinned=1;
+	pe.exclude_kernel=1;			 pe2.exclude_kernel=1;
+	pe.exclude_hv=1; 				 pe2.exclude_hv=1;
+	pe.wakeup_events=1;				 pe2.wakeup_events=1;
+	pe.precise_ip=2;				 pe2.precise_ip=2;
 
-        pe.read_format=read_format;
-        pe.disabled=1;
-        pe.pinned=1;
-        pe.exclude_kernel=1;
-        pe.exclude_hv=1;
-        pe.wakeup_events=1;
-	pe.precise_ip=2;
-
-	//arch_adjust_domain(&pe,quiet);
 
 	fd=perf_event_open(&pe,0,-1,-1,0);
 	if (fd<0) {
@@ -260,16 +275,51 @@ int main(int argc, char **argv) {
 			//test_fail(test_string);
 		}
 	}
-	our_mmap=mmap(NULL, mmap_pages*4096,
-		PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
+
+	fd2=perf_event_open(&pe2,0,-1,-1,0);
+	if (fd2<0) {
+		if (!quiet) {
+			fprintf(stderr,"Problem opening leader %s\n",
+				strerror(errno));
+			//test_fail(test_string);
+		}
+	}
+////////////////////PERF EVENT/////////////////////////////////
+
+
+	
+	our_mmap=mmap(NULL, mmap_pages*4096, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
 
 	fcntl(fd, F_SETFL, O_RDWR|O_NONBLOCK|O_ASYNC);
 	fcntl(fd, F_SETSIG, SIGIO);
-	fcntl(fd, F_SETOWN,getpid());
+	fcntl(fd, F_SETOWN, getpid());
 
 	ioctl(fd, PERF_EVENT_IOC_RESET, 0);
 
+
+	our_mmap2=mmap(NULL, mmap_pages*4096, PROT_READ|PROT_WRITE, MAP_SHARED, fd2, 0);
+
+	fcntl(fd2, F_SETFL, O_RDWR|O_NONBLOCK|O_ASYNC);
+	fcntl(fd2, F_SETSIG, SIGIO);
+	fcntl(fd2, F_SETOWN, getpid());
+
+	ioctl(fd2, PERF_EVENT_IOC_RESET, 0);
+
+
+	
 	ret=ioctl(fd, PERF_EVENT_IOC_ENABLE,0);
+
+	if (ret<0) {
+		if (!quiet) {
+			fprintf(stderr,"Error with PERF_EVENT_IOC_ENABLE "
+				"of group leader: %d %s\n",
+				errno,strerror(errno));
+			exit(1);
+		}
+	}	
+
+
+	ret=ioctl(fd2, PERF_EVENT_IOC_ENABLE,0);
 
 	if (ret<0) {
 		if (!quiet) {
@@ -280,65 +330,84 @@ int main(int argc, char **argv) {
 		}
 	}
 
-       //naive_matrix_multiply(quiet);
-       int sum = 0, val = 1;
-        //for(int i = 0; i < 100000000; i++) {
-#if 0
-	__asm__ __volatile__ ("movl %1, %%ebx;"
-                                "addl %%ebx, %0;"
-                                : "=m" (sum)
-                                : "r" (val)
-                                : "%ebx");	
-#endif
-       __asm__ __volatile__ (
-		"movq $100000000, %%rcx;"
-                "movl $1, %%ebx;"
-                "loop0:;"
-                "addl %%ebx, %0;"
-		"subq $1, %%rcx;"
-                "cmpq $0, %%rcx;"
-                "jne loop0;"
-                : "=m" (sum)
-                :
-                : "%ebx", "%ecx");
-        //}
 
-#if  0
-		__asm__ __volatile__ ("movq $10000000000, %%rcx\\n\\t"
-                "movl $1, %%ebx\\n\\t"
-                "loop0:\\n\\t"
-                "movl %0, %%ebx\\n\\t"
-{% for i in range(iter_count) %}
-                {{ statement_ext }}
-{% endfor %}
-                "subq $1, %%rcx\\n\\t"
-		"cmpq $0, %%rcx\\n\\t "
-		"jne loop0\\n\\t"
-                : "=m" (val)
-                :
-                : "memory", "%ebx", "%ecx"
-            );
-        }
-#endif
+
+
+
+
+
+
+
+
+
+	//naive_matrix_multiply(quiet);
+	int sum = 0, val = 1;
+	__asm__ __volatile__ (
+	"movq $100000000, %%rcx;"
+			"movl $1, %%ebx;"
+			"loop0:;"
+			"addl %%ebx, %0;"
+	"subq $1, %%rcx;"
+			"cmpq $0, %%rcx;"
+			"jne loop0;"
+			: "=m" (sum)
+			:
+			: "%ebx", "%ecx");
+	
+
+
+
+
+
+
 
 	ret=ioctl(fd, PERF_EVENT_IOC_REFRESH,0);
 
-	if (!quiet) {
-                printf("Counts %d, using mmap buffer %p\n",count_total,our_mmap);
-        }
+	ret=ioctl(fd2, PERF_EVENT_IOC_REFRESH,0);
+	
+	
 
-	if (count_total==0) {
+	if (!quiet) 
+		printf("Counts %d, using mmap buffer %p\n",count_total,our_mmap);
+    
+
+	if (count_total==0) 
+	{
 		if (!quiet) printf("No overflow events generated.\n");
 		//test_fail(test_string);
 	}
+	
 	munmap(our_mmap,mmap_pages*4096);
+	munmap(our_mmap2,mmap_pages*4096);
 
 	close(fd);
+	close(fd2);
 
 	//test_pass(test_string);
 
 	return 0;
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 /* Urgh who designed this interface */
 static int handle_struct_read_format(unsigned char *sample,
