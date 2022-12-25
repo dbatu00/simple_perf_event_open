@@ -137,6 +137,7 @@ Linux interface
 /* Global vars as I'm lazy */
 static int count_total=0;
 static char *our_mmap;
+static char *our_mmap2;
 static long sample_type;
 static long read_format;
 static int quiet;
@@ -193,6 +194,16 @@ static void our_handler(int signum, siginfo_t *info, void *uc) {
 
 	ret=ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
 	
+#if 1
+	prev_head=perf_mmap_read(our_mmap,MMAP_DATA_SIZE,prev_head,
+		sample_type,read_format,
+		0, /* reg_mask */
+		NULL, /*validate */
+		quiet,
+		NULL, /* events read */
+		0);
+#endif
+
 	count_total++;
 
 	ret=ioctl(fd, PERF_EVENT_IOC_REFRESH, 1);
@@ -244,7 +255,7 @@ int main(int argc, char **argv)
 	memset(&pe,0,sizeof(struct perf_event_attr));
 	memset(&pe2,0,sizeof(struct perf_event_attr));
 
-	sample_type=PERF_SAMPLE_IP|PERF_SAMPLE_ADDR;
+	sample_type=PERF_SAMPLE_IP|PERF_SAMPLE_ADDR|PERF_SAMPLE_IDENTIFIER;
 	read_format=0;
 
 	pe.type=PERF_TYPE_RAW;					pe2.type=PERF_TYPE_RAW;
@@ -254,7 +265,7 @@ int main(int argc, char **argv)
 	//MEM_UOPS_RETIRED:ALL_STORES	 MEM_UOPS_RETIRED:ALL_LOADS 
  	//pe.config = 0x5382d0;			 pe.config = 0x5381d0;
 	//pe.config = 0x82d0;			 pe.config = 0x81d0;	
-	pe.config = 0x82d0; 			 pe2.config = 0x82d0;
+	pe.config = 0x82d0; 			 pe2.config = 0x81d0;
 
 	pe.sample_period=SAMPLE_PERIOD;  pe2.sample_period=SAMPLE_PERIOD; 
 	pe.sample_type=sample_type;		 pe2.sample_type=sample_type;
@@ -319,9 +330,9 @@ int main(int argc, char **argv)
 	}	
 
 
-	ret=ioctl(fd2, PERF_EVENT_IOC_ENABLE,0);
+	ret2=ioctl(fd2, PERF_EVENT_IOC_ENABLE,0);
 
-	if (ret<0) {
+	if (ret2<0) {
 		if (!quiet) {
 			fprintf(stderr,"Error with PERF_EVENT_IOC_ENABLE "
 				"of group leader: %d %s\n",
