@@ -255,7 +255,7 @@ int main(int argc, char **argv)
 	memset(&pe,0,sizeof(struct perf_event_attr));
 	memset(&pe2,0,sizeof(struct perf_event_attr));
 
-	sample_type=PERF_SAMPLE_IP|PERF_SAMPLE_ADDR|PERF_SAMPLE_IDENTIFIER;
+	sample_type=PERF_SAMPLE_IP|PERF_SAMPLE_ADDR;
 	read_format=0;
 
 	pe.type=PERF_TYPE_RAW;					pe2.type=PERF_TYPE_RAW;
