@@ -135,13 +135,16 @@ Linux interface
 #define RAW_IBS_OP      2
 
 /* Global vars as I'm lazy */
-static int count_total=0;
-static char *our_mmap;
-static char *our_mmap2;
+static int count_total_store=0;
+static int count_total_load=0;
+static int count_total_allSignal=0;
+static char *mmap_store;
+static char *mmap_load;
 static long sample_type;
 static long read_format;
 static int quiet;
-static long long prev_head;
+static long long prev_head_store;
+static long long prev_head_load;
 
 
 
@@ -162,9 +165,9 @@ int test_quiet(void) {
 }
 
 
-
+//not specifically for store -- mmap_store naming is a mistake --
 long long perf_mmap_read(
-                void *our_mmap, int mmap_size, long long prev_head,
+                void *mmap_store, int mmap_size, long long prev_head,
                 int sample_type, int read_format, long long reg_mask,
                 struct validate_values *validate,
                 int quiet, int *events_read,
@@ -191,20 +194,40 @@ static void our_handler(int signum, siginfo_t *info, void *uc) {
 	int ret;
 
 	int fd = info->si_fd;
+	printf("%d",fd);
 
 	ret=ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
-	
-#if 1
-	prev_head=perf_mmap_read(our_mmap,MMAP_DATA_SIZE,prev_head,
-		sample_type,read_format,
-		0, /* reg_mask */
-		NULL, /*validate */
-		quiet,
-		NULL, /* events read */
-		0);
-#endif
 
-	count_total++;
+	if(fd == 3){
+	prev_head_store=perf_mmap_read(mmap_store,
+							 MMAP_DATA_SIZE,
+							 prev_head_store,
+							 sample_type,read_format,
+							 0, /* reg_mask */
+							 NULL, /*validate */
+							 quiet,
+							 NULL, /* events read */
+							 0);
+	
+	count_total_store++;
+	}
+
+	if(fd == 4)
+		prev_head_load=perf_mmap_read(mmap_load,
+							 MMAP_DATA_SIZE,
+							 prev_head_load,
+							 sample_type,read_format,
+							 0, /* reg_mask */
+							 NULL, /*validate */
+							 quiet,
+							 NULL, /* events read */
+							 0);
+
+	count_total_load++;
+	}
+	
+	static int count_total_allSignal++;
+
 
 	ret=ioctl(fd, PERF_EVENT_IOC_REFRESH, 1);
 
@@ -219,7 +242,7 @@ int main(int argc, char **argv)
 {
 
 	int ret;
-	int fd,fd2;
+	int fd_store,fd_load;
 	int mmap_pages=1+MMAP_DATA_SIZE;
 
 	char test_string[]="Testing pebs latency...";
@@ -250,75 +273,79 @@ int main(int argc, char **argv)
 
 	/* Set up Instruction Event */
 ////////////////////PERF EVENT/////////////////////////////////
-	struct perf_event_attr pe,pe2;
+	struct perf_event_attr pe,pe_load;
 
 	memset(&pe,0,sizeof(struct perf_event_attr));
-	memset(&pe2,0,sizeof(struct perf_event_attr));
+	memset(&pe_load,0,sizeof(struct perf_event_attr));
 
 	sample_type=PERF_SAMPLE_IP|PERF_SAMPLE_ADDR;
 	read_format=0;
 
-	pe.type=PERF_TYPE_RAW;					pe2.type=PERF_TYPE_RAW;
-	pe.size=sizeof(struct perf_event_attr); pe2.size=sizeof(struct perf_event_attr);
+	pe.type=PERF_TYPE_RAW;					pe_load.type=PERF_TYPE_RAW;
+	pe.size=sizeof(struct perf_event_attr); pe_load.size=sizeof(struct perf_event_attr);
 	
 
 	//MEM_UOPS_RETIRED:ALL_STORES	 MEM_UOPS_RETIRED:ALL_LOADS 
  	//pe.config = 0x5382d0;			 pe.config = 0x5381d0;
 	//pe.config = 0x82d0;			 pe.config = 0x81d0;	
-	pe.config = 0x82d0; 			 pe2.config = 0x81d0;
+	pe.config = 0x82d0; 			 pe_load.config = 0x81d0;
 
-	pe.sample_period=SAMPLE_PERIOD;  pe2.sample_period=SAMPLE_PERIOD; 
-	pe.sample_type=sample_type;		 pe2.sample_type=sample_type;
-	pe.read_format=read_format; 	 pe2.read_format=read_format;
-	pe.disabled=1;					 pe2.disabled=1;
-	pe.pinned=1;					 pe2.pinned=1;
-	pe.exclude_kernel=1;			 pe2.exclude_kernel=1;
-	pe.exclude_hv=1; 				 pe2.exclude_hv=1;
-	pe.wakeup_events=1;				 pe2.wakeup_events=1;
-	pe.precise_ip=2;				 pe2.precise_ip=2;
+	pe.sample_period=SAMPLE_PERIOD;  pe_load.sample_period=SAMPLE_PERIOD; 
+	pe.sample_type=sample_type;		 pe_load.sample_type=sample_type;
+	pe.read_format=read_format; 	 pe_load.read_format=read_format;
+	pe.disabled=1;					 pe_load.disabled=1;
+	pe.pinned=1;					 pe_load.pinned=1;
+	pe.exclude_kernel=1;			 pe_load.exclude_kernel=1;
+	pe.exclude_hv=1; 				 pe_load.exclude_hv=1;
+	pe.wakeup_events=1;				 pe_load.wakeup_events=1;
+	pe.precise_ip=2;				 pe_load.precise_ip=2;
 
 
-	fd=perf_event_open(&pe,0,-1,-1,0);
-	if (fd<0) {
+	fd_store=perf_event_open(&pe,0,-1,-1,0);
+	if (fd_store<0) {
 		if (!quiet) {
 			fprintf(stderr,"Problem opening leader %s\n",
 				strerror(errno));
 			//test_fail(test_string);
 		}
 	}
+	
+	printf("fd_store = perf event open\n");
 
-	fd2=perf_event_open(&pe2,0,-1,-1,0);
-	if (fd2<0) {
+	fd_load=perf_event_open(&pe_load,0,-1,-1,0);
+	if (fd_load<0) {
 		if (!quiet) {
 			fprintf(stderr,"Problem opening leader %s\n",
 				strerror(errno));
 			//test_fail(test_string);
 		}
 	}
+	printf("fd_load = perf event open\n");
 ////////////////////PERF EVENT/////////////////////////////////
 
 
 	
-	our_mmap=mmap(NULL, mmap_pages*4096, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
+	mmap_store=mmap(NULL, mmap_pages*4096, PROT_READ|PROT_WRITE, MAP_SHARED, fd_store, 0);
 
-	fcntl(fd, F_SETFL, O_RDWR|O_NONBLOCK|O_ASYNC);
-	fcntl(fd, F_SETSIG, SIGIO);
-	fcntl(fd, F_SETOWN, getpid());
+	fcntl(fd_store, F_SETFL, O_RDWR|O_NONBLOCK|O_ASYNC);
+	fcntl(fd_store, F_SETSIG, SIGIO);
+	fcntl(fd_store, F_SETOWN, getpid());
 
-	ioctl(fd, PERF_EVENT_IOC_RESET, 0);
+	ioctl(fd_store, PERF_EVENT_IOC_RESET, 0);
 
+	printf("fd store fcntl,ioctl calls done\n");
 
-	our_mmap2=mmap(NULL, mmap_pages*4096, PROT_READ|PROT_WRITE, MAP_SHARED, fd2, 0);
+	mmap_load=mmap(NULL, mmap_pages*4096, PROT_READ|PROT_WRITE, MAP_SHARED, fd_load, 0);
 
-	fcntl(fd2, F_SETFL, O_RDWR|O_NONBLOCK|O_ASYNC);
-	fcntl(fd2, F_SETSIG, SIGIO);
-	fcntl(fd2, F_SETOWN, getpid());
+	fcntl(fd_load, F_SETFL, O_RDWR|O_NONBLOCK|O_ASYNC);
+	fcntl(fd_load, F_SETSIG, SIGIO);
+	fcntl(fd_load, F_SETOWN, getpid());
 
-	ioctl(fd2, PERF_EVENT_IOC_RESET, 0);
+	ioctl(fd_load, PERF_EVENT_IOC_RESET, 0);
 
-
+	printf("fd load fcntl,ioctl calls done\n");
 	
-	ret=ioctl(fd, PERF_EVENT_IOC_ENABLE,0);
+	ret=ioctl(fd_store, PERF_EVENT_IOC_ENABLE,0);
 
 	if (ret<0) {
 		if (!quiet) {
@@ -327,10 +354,13 @@ int main(int argc, char **argv)
 				errno,strerror(errno));
 			exit(1);
 		}
+		else{
+			printf("fd_store enabled\n");
+		}
 	}	
 
 
-	ret2=ioctl(fd2, PERF_EVENT_IOC_ENABLE,0);
+	ret2=ioctl(fd_load, PERF_EVENT_IOC_ENABLE,0);
 
 	if (ret2<0) {
 		if (!quiet) {
@@ -339,6 +369,9 @@ int main(int argc, char **argv)
 				errno,strerror(errno));
 			exit(1);
 		}
+		else{
+			printf("fd_load enabled\n");
+		}
 	}
 
 
@@ -346,10 +379,7 @@ int main(int argc, char **argv)
 
 
 
-
-
-
-
+	printf("matrix multiplication\n");
 
 	//naive_matrix_multiply(quiet);
 	int sum = 0, val = 1;
@@ -357,12 +387,13 @@ int main(int argc, char **argv)
 	"movq $100000000, %%rcx;"
 			"movl $1, %%ebx;"
 			"loop0:;"
-			"addl %%ebx, %0;"
+			"movl %%ebx, %0;"
+			"movl %1, %%ebx;"
 	"subq $1, %%rcx;"
 			"cmpq $0, %%rcx;"
 			"jne loop0;"
 			: "=m" (sum)
-			:
+			: "m" (val)
 			: "%ebx", "%ecx");
 	
 
@@ -372,27 +403,29 @@ int main(int argc, char **argv)
 
 
 
-	ret=ioctl(fd, PERF_EVENT_IOC_REFRESH,0);
+	ret=ioctl(fd_store, PERF_EVENT_IOC_REFRESH,0);
+	printf("fd_store refresh\n");
 
-	ret=ioctl(fd2, PERF_EVENT_IOC_REFRESH,0);
+	ret=ioctl(fd_load, PERF_EVENT_IOC_REFRESH,0);
+	printf("fd_load refresh\n");
 	
 	
 
 	if (!quiet) 
-		printf("Counts %d, using mmap buffer %p\n",count_total,our_mmap);
+		printf("Counts %d, using mmap buffer %p\n",count_total,mmap_store);
     
 
-	if (count_total==0) 
+	if (count_total_allSignal==0) 
 	{
 		if (!quiet) printf("No overflow events generated.\n");
 		//test_fail(test_string);
 	}
 	
-	munmap(our_mmap,mmap_pages*4096);
-	munmap(our_mmap2,mmap_pages*4096);
+	munmap(mmap_store,mmap_pages*4096);
+	munmap(mmap_load,mmap_pages*4096);
 
-	close(fd);
-	close(fd2);
+	close(fd_store);
+	close(fd_load);
 
 	//test_pass(test_string);
 
@@ -704,7 +737,7 @@ static int dump_raw_ibs_op(unsigned char *data, int size) {
 
 static int debug=0;
 
-long long perf_mmap_read( void *our_mmap, int mmap_size,
+long long perf_mmap_read( void *mmap_store, int mmap_size,
 			long long prev_head,
 			int sample_type, int read_format, long long reg_mask,
 			struct validate_values *validate,
@@ -712,14 +745,14 @@ long long perf_mmap_read( void *our_mmap, int mmap_size,
 			int raw_type ) {
 
 	printf("this is perf_mmap_read\n");
-	struct perf_event_mmap_page *control_page = our_mmap;
+	struct perf_event_mmap_page *control_page = mmap_store;
 	long long head,offset;
 	int i,size;
 	long long bytesize,prev_head_wrap;
 
 	unsigned char *data;
 
-	void *data_mmap=our_mmap+getpagesize();
+	void *data_mmap=mmap_store+getpagesize();
 
 	if (mmap_size==0) return 0;
 
