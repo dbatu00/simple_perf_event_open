@@ -127,7 +127,8 @@ Linux interface
 #include <asm/perf_regs.h>
 #endif
 
-#define SAMPLE_PERIOD 100000
+#define SAMPLE_PERIOD 10000000
+// 100000
 
 #define MMAP_DATA_SIZE 8
 
@@ -145,6 +146,7 @@ static long read_format;
 static int quiet;
 static long long prev_head_store;
 static long long prev_head_load;
+int sum = 0, val = 1;
 
 
 
@@ -191,15 +193,23 @@ long perf_event_open(struct perf_event_attr *hw_event,
 
 static void our_handler(int signum, siginfo_t *info, void *uc) {
 
+	
+
+	printf("********************signal handler starts\n");
 	int ret;
 
 	int fd = info->si_fd;
-	printf("%d",fd);
 
 	ret=ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
+	
+	printf("sum=%d, value=%d\n", sum, val);
+	
 
 	if(fd == 3){
-	prev_head_store=perf_mmap_read(mmap_store,
+
+		printf("store sample sampled address = %p\n\n", &sum);	
+
+		prev_head_store=perf_mmap_read(mmap_store,
 							 MMAP_DATA_SIZE,
 							 prev_head_store,
 							 sample_type,read_format,
@@ -209,10 +219,12 @@ static void our_handler(int signum, siginfo_t *info, void *uc) {
 							 NULL, /* events read */
 							 0);
 	
-	count_total_store++;
+		count_total_store++;
 	}
 
-	if(fd == 4)
+	if(fd == 4){
+		printf("load sample, sampled address = %p\n\n", &val);
+
 		prev_head_load=perf_mmap_read(mmap_load,
 							 MMAP_DATA_SIZE,
 							 prev_head_load,
@@ -223,15 +235,17 @@ static void our_handler(int signum, siginfo_t *info, void *uc) {
 							 NULL, /* events read */
 							 0);
 
-	count_total_load++;
+		count_total_load++;
 	}
 	
-	static int count_total_allSignal++;
+	count_total_allSignal++;
 
 
 	ret=ioctl(fd, PERF_EVENT_IOC_REFRESH, 1);
 
 	(void) ret;
+
+	printf("**************************signal handler ends\n\n");
 
 }
 
@@ -241,7 +255,7 @@ static void our_handler(int signum, siginfo_t *info, void *uc) {
 int main(int argc, char **argv) 
 {
 
-	int ret;
+	int ret,ret2;
 	int fd_store,fd_load;
 	int mmap_pages=1+MMAP_DATA_SIZE;
 
@@ -382,7 +396,7 @@ int main(int argc, char **argv)
 	printf("matrix multiplication\n");
 
 	//naive_matrix_multiply(quiet);
-	int sum = 0, val = 1;
+	
 	__asm__ __volatile__ (
 	"movq $100000000, %%rcx;"
 			"movl $1, %%ebx;"
@@ -412,7 +426,9 @@ int main(int argc, char **argv)
 	
 
 	if (!quiet) 
-		printf("Counts %d, using mmap buffer %p\n",count_total,mmap_store);
+		printf("Counts %d, using mmap store buffer %p\n",count_total_store,mmap_store);
+	if (!quiet) 
+		printf("Counts %d, using mmap load buffer %p\n",count_total_load,mmap_load);
     
 
 	if (count_total_allSignal==0) 
