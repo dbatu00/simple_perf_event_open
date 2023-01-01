@@ -3,7 +3,22 @@
 
 */
 
+/* 
+one debug register monitors one memory region(ex: address 10 to 18)
+any access to that region activates the trap
+get offset address(beginning of cache line) of monitored variable 
+cache line = 64 bytes, each debug register 8 bytes x 4 registers = 32 bytes 
+																 => select 4 random regions to monitor
+monitor the cache line because we are focused cache line granularity interthread communication 
 
+PMU & debug rx: there are 4 counters in a cpu => can monitor 4 events(not relevant as we monitor 2)
+PMUs and debug registers are different hardware 
+PMUs trigger interrupts, debug registers trigger traps
+perf_event_open used for both PMUs and debug registers
+
+no need to differentiate events for debug register
+*pe.bp_addr=(unsigned long)&test_var; // offset of cacheline of address to be monitored*
+*/
 
 /* Intel Volume 3-B
 
