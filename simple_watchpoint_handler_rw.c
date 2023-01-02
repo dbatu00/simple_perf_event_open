@@ -65,6 +65,7 @@ static void our_handler(int signum,siginfo_t *oh, void *blah) {
 
         ret=ioctl(fd1, PERF_EVENT_IOC_DISABLE, 0);
 
+		//switch not important
         switch(oh->si_code) {
                 case POLL_IN:  count.in++;  break;
                 case POLL_OUT: count.out++; break;
@@ -115,8 +116,20 @@ int main(int argc, char** argv) {
 	pe.config=0;
 
 	pe.bp_type=HW_BREAKPOINT_RW;
-	pe.bp_addr=(unsigned long)&test_var;
-	pe.bp_len=sizeof(int);
+
+
+
+
+	pe.bp_addr=(unsigned long)&test_var; // address to start of memory region(offset address) to monitor
+	pe.bp_len=sizeof(int); 				 // just set it to 8bytes?
+
+
+
+
+
+
+
+
 	/* 1 million.  Tried 100k but that was too short on */
 	/* faster machines, likely triggered overflow while */
 	/* poll still was being handled?                    */
