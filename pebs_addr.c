@@ -120,7 +120,7 @@ Linux interface
 */
 
 
-
+#pragma region global vars, prototype function etc
 
 #define _GNU_SOURCE 1
 
@@ -134,11 +134,16 @@ Linux interface
 #include <errno.h>
 
 #include <signal.h>
+#include <sys/ptrace.h>
 #include <sys/mman.h>
+
+
 
 #include <sys/ioctl.h>
 #include <asm/unistd.h>
 #include <sys/prctl.h>
+#include <sys/wait.h>
+#include <sys/poll.h>
 #include "perf_barrier.h"
 //#include "perf_event.h"
 
@@ -147,6 +152,8 @@ Linux interface
 //#include "matrix_multiply.h"
 //#include "parse_record.h"
 #include <linux/perf_event.h>
+
+#include <linux/hw_breakpoint.h>
 #if defined(__x86_64__) || defined(__i386__) ||defined(__arm__)
 #include <asm/perf_regs.h>
 #endif
@@ -159,18 +166,39 @@ Linux interface
 #define RAW_IBS_FETCH   1
 #define RAW_IBS_OP      2
 
+#define MMAP_PAGES 8
+
+size_t test_function(size_t a, size_t b) __attribute__((noinline));
+
+size_t test_function(size_t a, size_t b) {
+
+        size_t c;
+
+        /* The time thing is there to keep the compiler */
+        /* from optimizing this away.                   */
+
+        c=a+b+rand();
+        //if (!quiet) printf("\t\tFunction: %zd\n",c);
+        return c;
+
+}
+
 /* Global vars as I'm lazy */
 static int count_total_store=0;
 static int count_total_load=0;
 static int count_total_allSignal=0;
 static char *mmap_store;
 static char *mmap_load;
+static char *mmap_wp;
 static long sample_type;
 static long read_format;
 static int quiet;
 static long long prev_head_store;
 static long long prev_head_load;
-int sum = 0, val = 1;
+static int sum = 0, val = 1;
+static long long addr;
+static int fd_wp;
+
 
 
 
@@ -215,6 +243,47 @@ long perf_event_open(struct perf_event_attr *hw_event,
 
 
 
+
+static struct signal_counts {
+	int in,out,msg,err,pri,hup,unknown,total;
+} count = {0,0,0,0,0,0,0,0};
+
+
+
+
+static void wp_handler(int signum, siginfo_t *oh, void *blah) {
+	printf("**************************wp handler starts\n");
+
+        int ret;
+
+	 int fd = oh->si_fd;
+
+     ret=ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
+	printf("**************************wp disabled\n");
+		
+
+		//switch not important
+        switch(oh->si_code) {
+                case POLL_IN:  count.in++;  break;
+                case POLL_OUT: count.out++; break;
+                case POLL_MSG: count.msg++; break;
+                case POLL_ERR: count.err++; break;
+                case POLL_PRI: count.pri++; break;
+                case POLL_HUP: count.hup++; break;
+                default: count.unknown++; break;
+        }
+
+        count.total++;
+		printf("\tcount total %d, trapped address: %llx\n", count.total, addr);
+
+        //ret=ioctl(fd, PERF_EVENT_IOC_ENABLE,1);
+		printf("**************************wp handler ends\n\n");
+
+        (void) ret;
+
+}
+
+
 static void our_handler(int signum, siginfo_t *info, void *uc) {
 
 	
@@ -223,6 +292,7 @@ static void our_handler(int signum, siginfo_t *info, void *uc) {
 	int ret;
 
 	int fd = info->si_fd;
+	printf("fd= %d\n",fd);
 
 	ret=ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
 	
@@ -231,7 +301,7 @@ static void our_handler(int signum, siginfo_t *info, void *uc) {
 
 	if(fd == 3){
 
-		printf("store sample sampled address = %p\n\n", &sum);	
+		printf("store sample, sampled address = %p\n", &sum);	
 
 		prev_head_store=perf_mmap_read(mmap_store,
 							 MMAP_DATA_SIZE,
@@ -267,9 +337,13 @@ static void our_handler(int signum, siginfo_t *info, void *uc) {
 
 	ret=ioctl(fd, PERF_EVENT_IOC_REFRESH, 1);
 
-	(void) ret;
+	ret=ioctl(fd_wp, PERF_EVENT_IOC_ENABLE,1);
+	printf("**************************wp enabled\n\n");
 
 	printf("**************************signal handler ends\n\n");
+
+	(void) ret;
+	
 
 }
 
@@ -279,9 +353,10 @@ static void our_handler(int signum, siginfo_t *info, void *uc) {
 int main(int argc, char **argv) 
 {
 
-	int ret,ret2;
+	int ret,ret2,ret_wp;
 	int fd_store,fd_load;
 	int mmap_pages=1+MMAP_DATA_SIZE;
+	long long bp_counter;
 
 	char test_string[]="Testing pebs latency...";
 
@@ -290,8 +365,11 @@ int main(int argc, char **argv)
 	if (!quiet) 
 		printf("This tests the intel PEBS latency.\n");
 
-/////////////////////////SIGNAL//////////////////////////
 
+
+
+/////////////////////////PMU SIGACTION//////////////////////////
+#pragma region
 	struct sigaction sa;
 
 	memset(&sa, 0, sizeof(struct sigaction));
@@ -303,20 +381,19 @@ int main(int argc, char **argv)
 			fprintf(stderr,"Error setting up signal handler\n");
 			exit(1);
 	}
+#pragma endregion
 
 
-/////////////////////////SIGNAL//////////////////////////
 
 
-
-	/* Set up Instruction Event */
-////////////////////PERF EVENT/////////////////////////////////
+////////////////////PMU PERF EVENT/////////////////////////////////
+#pragma region
 	struct perf_event_attr pe,pe_load;
 
 	memset(&pe,0,sizeof(struct perf_event_attr));
 	memset(&pe_load,0,sizeof(struct perf_event_attr));
 
-	sample_type=PERF_SAMPLE_IP|PERF_SAMPLE_ADDR;
+	sample_type=PERF_SAMPLE_ADDR|PERF_SAMPLE_TID|PERF_SAMPLE_TIME;
 	read_format=0;
 
 	pe.type=PERF_TYPE_RAW;					pe_load.type=PERF_TYPE_RAW;
@@ -359,8 +436,13 @@ int main(int argc, char **argv)
 		}
 	}
 	printf("fd_load = perf event open\n");
-////////////////////PERF EVENT/////////////////////////////////
+#pragma endregion
 
+
+
+
+////////////////////PMU ACTIVATION + IOC/FCNTL///////////////
+#pragma region 
 
 	
 	mmap_store=mmap(NULL, mmap_pages*4096, PROT_READ|PROT_WRITE, MAP_SHARED, fd_store, 0);
@@ -383,6 +465,8 @@ int main(int argc, char **argv)
 
 	printf("fd load fcntl,ioctl calls done\n");
 	
+
+
 	ret=ioctl(fd_store, PERF_EVENT_IOC_ENABLE,0);
 
 	if (ret<0) {
@@ -412,15 +496,93 @@ int main(int argc, char **argv)
 		}
 	}
 
+#pragma endregion
+
+
+
+
+/////////////////////////WP SIGACTION///////////////////////////
+#pragma region
+
+struct sigaction sa_wp;
+
+memset(&sa_wp, 0, sizeof(struct sigaction));
+        sa_wp.sa_sigaction = wp_handler;
+        sa_wp.sa_flags = SA_SIGINFO;
+
+        if (sigaction( SIGIO, &sa_wp, NULL) < 0) {
+                fprintf(stderr,"Error setting up WATCHPOINT signal handler\n");
+                exit(1);
+        }
+
+#pragma endregion
+
+
+
+
+/////////////////////////WP PERF EVENT///////////////////////
+#pragma region
+
+struct perf_event_attr pe_wp;
+
+memset(&pe_wp,0,sizeof(struct perf_event_attr));
+	pe_wp.type=PERF_TYPE_BREAKPOINT;
+	pe_wp.size=sizeof(struct perf_event_attr);
+	pe_wp.config=0;
+	pe_wp.bp_type=HW_BREAKPOINT_RW;
+	//pe_wp.bp_addr=(unsigned long)&sum;
+	pe_wp.bp_addr=addr; // address to start of memory region(offset address) to monitor
+	pe_wp.bp_len=sizeof(int); 				 // just set it to 8bytes?
+	pe_wp.sample_period=1;
+	pe_wp.sample_type=PERF_SAMPLE_ADDR|PERF_SAMPLE_TID|PERF_SAMPLE_TIME;
+	pe_wp.wakeup_events=1;
+	pe_wp.disabled=1;
+	pe_wp.exclude_kernel=1;
+	pe_wp.exclude_hv=1;
+
+	fd_wp=perf_event_open(&pe_wp,0,-1,-1,0);
+	if (fd_wp<0) {
+		fprintf(stderr,"Error opening leader %llx\n",pe_wp.config);
+	}
+
+	
+
+#pragma endregion
+
+
+
+
+////////////////////WP ACTIVATION + IOC/FCNTL///////////////
+#pragma region
+
+//mmap_wp=mmap(NULL, (1+MMAP_PAGES)*getpagesize(),
+//				 PROT_READ|PROT_WRITE, MAP_SHARED, fd_wp, 0);
+
+ fcntl(fd_wp, F_SETFL, O_RDWR|O_NONBLOCK|O_ASYNC);
+        fcntl(fd_wp, F_SETSIG, SIGIO);
+        fcntl(fd_wp, F_SETOWN,getpid());
+
+	ioctl(fd_wp, PERF_EVENT_IOC_RESET, 0);
+	ret_wp=ioctl(fd_wp, PERF_EVENT_IOC_DISABLE,0);
+
+	if (ret_wp<0) { fprintf(stderr,"Error with PERF_EVENT_IOC_DISABLE of group leader: ""%d %s\n",errno,strerror(errno));}
+	
 
 
 
 
 
-	printf("matrix multiplication\n");
+
+
+#pragma endregion
+
+
+////////////////////////////MATRIX///////////////////////////////
+#pragma region
+	printf("matrix multiplication\n\n");
 
 	//naive_matrix_multiply(quiet);
-	
+		
 	__asm__ __volatile__ (
 	"movq $100000000, %%rcx;"
 			"movl $1, %%ebx;"
@@ -435,17 +597,19 @@ int main(int argc, char **argv)
 			: "%ebx", "%ecx");
 	
 
+#pragma endregion
 
 
 
 
-
+#pragma region clean up
 
 	ret=ioctl(fd_store, PERF_EVENT_IOC_REFRESH,0);
 	printf("fd_store refresh\n");
 
-	ret=ioctl(fd_load, PERF_EVENT_IOC_REFRESH,0);
+	ret2=ioctl(fd_load, PERF_EVENT_IOC_REFRESH,0);
 	printf("fd_load refresh\n");
+	ret2=ioctl(fd_wp, PERF_EVENT_IOC_REFRESH,0);
 	
 	
 
@@ -461,15 +625,26 @@ int main(int argc, char **argv)
 		//test_fail(test_string);
 	}
 	
+
 	munmap(mmap_store,mmap_pages*4096);
 	munmap(mmap_load,mmap_pages*4096);
 
 	close(fd_store);
 	close(fd_load);
 
-	//test_pass(test_string);
+	ioctl(fd_wp, PERF_EVENT_IOC_DISABLE,0);
+	
+	//read_result=read(fd_wp,&bp_counter,sizeof(long long));
+	close(fd_wp);
 
+
+	//test_pass(test_string);
+#pragma endregion
+	
+	
 	return 0;
+
+
 }
 
 
@@ -1184,7 +1359,7 @@ long long perf_mmap_read( void *mmap_store, int mmap_size,
 				offset+=8;
 			}
 			if (sample_type & PERF_SAMPLE_ADDR) {
-				long long addr;
+				//long long addr; --made global 
 				memcpy(&addr,&data[offset],sizeof(long long));
 				if (!quiet) printf("\tPERF_SAMPLE_ADDR, addr: %llx\n",addr);
 				offset+=8;
