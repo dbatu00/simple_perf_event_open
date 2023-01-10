@@ -195,11 +195,17 @@ static long read_format;
 static int quiet;
 static long long prev_head_store;
 static long long prev_head_load;
-static int sum = 0, val = 1;
+static int sum = 0, val = 1, unused = 5;
+int *ptr = &unused;
 static long long addr;
 static int fd_wp;
+struct perf_event_attr pe_wp;
 
-
+#define CHECK(x) ({int err = (x); \
+if (err) { \
+fprintf(stderr, "%s: Failed with %d on line %d of file %s\n", strerror(errno), err, __LINE__, __FILE__); \
+exit(-1); }\
+err;})
 
 
 struct validate_values {
@@ -252,14 +258,14 @@ static struct signal_counts {
 
 
 static void wp_handler(int signum, siginfo_t *oh, void *blah) {
-	printf("**************************wp handler starts\n");
+	printf("*********WP HANDLER - START*********\n");
 
         int ret;
 
 	 int fd = oh->si_fd;
 
      ret=ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
-	printf("**************************wp disabled\n");
+	printf("\tWP = Disabled\n");
 		
 
 		//switch not important
@@ -277,7 +283,7 @@ static void wp_handler(int signum, siginfo_t *oh, void *blah) {
 		printf("\tcount total %d, trapped address: %llx\n", count.total, addr);
 
         //ret=ioctl(fd, PERF_EVENT_IOC_ENABLE,1);
-		printf("**************************wp handler ends\n\n");
+		printf("**********WP HANDLER - END*********\n\n\n");
 
         (void) ret;
 
@@ -288,11 +294,11 @@ static void our_handler(int signum, siginfo_t *info, void *uc) {
 
 	
 
-	printf("********************signal handler starts\n");
+	printf("*********SIGNAL HANDLER - START*********\n");
 	int ret;
 
 	int fd = info->si_fd;
-	printf("fd= %d\n",fd);
+	
 
 	ret=ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
 	
@@ -337,10 +343,13 @@ static void our_handler(int signum, siginfo_t *info, void *uc) {
 
 	ret=ioctl(fd, PERF_EVENT_IOC_REFRESH, 1);
 
-	ret=ioctl(fd_wp, PERF_EVENT_IOC_ENABLE,1);
-	printf("**************************wp enabled\n\n");
+	pe_wp.bp_addr =(unsigned long)&unused;
+	CHECK(ioctl(fd_wp, PERF_EVENT_IOC_MODIFY_ATTRIBUTES, (unsigned long) (&pe_wp)));
 
-	printf("**************************signal handler ends\n\n");
+	ret=ioctl(fd_wp, PERF_EVENT_IOC_ENABLE,1);
+	printf("\tWP = Enabled\n");
+
+	printf("*********SIGNAL HANDLER - END*********\n\n\n");
 
 	(void) ret;
 	
@@ -357,6 +366,7 @@ int main(int argc, char **argv)
 	int fd_store,fd_load;
 	int mmap_pages=1+MMAP_DATA_SIZE;
 	long long bp_counter;
+	printf("sum address= %p, val address = %p\n", (void*)&sum, (void*)&val);
 
 	char test_string[]="Testing pebs latency...";
 
@@ -510,7 +520,7 @@ memset(&sa_wp, 0, sizeof(struct sigaction));
         sa_wp.sa_sigaction = wp_handler;
         sa_wp.sa_flags = SA_SIGINFO;
 
-        if (sigaction( SIGIO, &sa_wp, NULL) < 0) {
+        if (sigaction( SIGRTMIN, &sa_wp, NULL) < 0) {
                 fprintf(stderr,"Error setting up WATCHPOINT signal handler\n");
                 exit(1);
         }
@@ -523,7 +533,7 @@ memset(&sa_wp, 0, sizeof(struct sigaction));
 /////////////////////////WP PERF EVENT///////////////////////
 #pragma region
 
-struct perf_event_attr pe_wp;
+
 
 memset(&pe_wp,0,sizeof(struct perf_event_attr));
 	pe_wp.type=PERF_TYPE_BREAKPOINT;
@@ -531,7 +541,7 @@ memset(&pe_wp,0,sizeof(struct perf_event_attr));
 	pe_wp.config=0;
 	pe_wp.bp_type=HW_BREAKPOINT_RW;
 	//pe_wp.bp_addr=(unsigned long)&sum;
-	pe_wp.bp_addr=addr; // address to start of memory region(offset address) to monitor
+	pe_wp.bp_addr=(unsigned long)&sum; // address to start of memory region(offset address) to monitor
 	pe_wp.bp_len=sizeof(int); 				 // just set it to 8bytes?
 	pe_wp.sample_period=1;
 	pe_wp.sample_type=PERF_SAMPLE_ADDR|PERF_SAMPLE_TID|PERF_SAMPLE_TIME;
@@ -559,7 +569,7 @@ memset(&pe_wp,0,sizeof(struct perf_event_attr));
 //				 PROT_READ|PROT_WRITE, MAP_SHARED, fd_wp, 0);
 
  fcntl(fd_wp, F_SETFL, O_RDWR|O_NONBLOCK|O_ASYNC);
-        fcntl(fd_wp, F_SETSIG, SIGIO);
+        fcntl(fd_wp, F_SETSIG, SIGRTMIN);
         fcntl(fd_wp, F_SETOWN,getpid());
 
 	ioctl(fd_wp, PERF_EVENT_IOC_RESET, 0);
