@@ -168,6 +168,8 @@ Linux interface
 
 #define MMAP_PAGES 8
 
+#define CACHE_LINE_SIZE 64
+
 size_t test_function(size_t a, size_t b) __attribute__((noinline));
 
 size_t test_function(size_t a, size_t b) {
@@ -198,8 +200,9 @@ static long long prev_head_load;
 static int sum = 0, val = 1, unused = 5;
 int *ptr = &unused;
 static long long addr;
-static int fd_wp;
+static int fd_wp[4];
 struct perf_event_attr pe_wp;
+static int process_id;
 
 #define CHECK(x) ({int err = (x); \
 if (err) { \
@@ -207,6 +210,9 @@ fprintf(stderr, "%s: Failed with %d on line %d of file %s\n", strerror(errno), e
 exit(-1); }\
 err;})
 
+static long long get_first_cache_line_address(long long addr) {
+    return (addr & ~(CACHE_LINE_SIZE - 1));
+}
 
 struct validate_values {
         int pid;
@@ -343,11 +349,27 @@ static void our_handler(int signum, siginfo_t *info, void *uc) {
 
 	ret=ioctl(fd, PERF_EVENT_IOC_REFRESH, 1);
 
-	pe_wp.bp_addr =(unsigned long)&unused;
-	CHECK(ioctl(fd_wp, PERF_EVENT_IOC_MODIFY_ATTRIBUTES, (unsigned long) (&pe_wp)));
+	
+	
+	for(int i = 0; i<4; i++){
+		pe_wp.bp_addr = get_first_cache_line_address(addr+(i*8));
+		CHECK(ioctl(fd_wp[i], PERF_EVENT_IOC_MODIFY_ATTRIBUTES, (unsigned long) (&pe_wp)));
+		printf("Debug register number %d armed with addr : %llx \n", i, get_first_cache_line_address(addr));
+		ret=ioctl(fd_wp[i], PERF_EVENT_IOC_ENABLE,1);
+		if(ret<0){
+			printf("Problem enabling WP no: %d",i)+1;
+		}
+		else{
+			printf("\tWP no %d = Enabled\n",i+1);
 
-	ret=ioctl(fd_wp, PERF_EVENT_IOC_ENABLE,1);
-	printf("\tWP = Enabled\n");
+		}
+		
+
+	}
+	//CHECK(ioctl(fd_wp, PERF_EVENT_IOC_MODIFY_ATTRIBUTES, (unsigned long) (&pe_wp)));
+
+	
+	
 
 	printf("*********SIGNAL HANDLER - END*********\n\n\n");
 
@@ -375,6 +397,26 @@ int main(int argc, char **argv)
 	if (!quiet) 
 		printf("This tests the intel PEBS latency.\n");
 
+	if (argc > 1) 
+	{
+		process_id = atoi(argv[1]);
+		
+		pid_t pid = (pid_t) process_id;
+		pid_t child_pid = fork();
+
+		if (child_pid == 0) 
+		{
+			printf("Process ID: %d\n", process_id);
+			// code that does the profiling
+		} else 
+		{
+			wait(NULL);
+			printf("Profiling done.\n");
+		}
+	} else 
+	{
+    fprintf(stderr, "Error: No process ID passed\n");
+	}
 
 
 
@@ -426,7 +468,7 @@ int main(int argc, char **argv)
 	pe.precise_ip=2;				 pe_load.precise_ip=2;
 
 
-	fd_store=perf_event_open(&pe,0,-1,-1,0);
+	fd_store=perf_event_open(&pe,(pid_t)atoi(argv[1]),-1,-1,0);
 	if (fd_store<0) {
 		if (!quiet) {
 			fprintf(stderr,"Problem opening leader %s\n",
@@ -437,7 +479,7 @@ int main(int argc, char **argv)
 	
 	printf("fd_store = perf event open\n");
 
-	fd_load=perf_event_open(&pe_load,0,-1,-1,0);
+	fd_load=perf_event_open(&pe_load,(pid_t)atoi(argv[1]),-1,-1,0);
 	if (fd_load<0) {
 		if (!quiet) {
 			fprintf(stderr,"Problem opening leader %s\n",
@@ -541,7 +583,7 @@ memset(&pe_wp,0,sizeof(struct perf_event_attr));
 	pe_wp.config=0;
 	pe_wp.bp_type=HW_BREAKPOINT_RW;
 	//pe_wp.bp_addr=(unsigned long)&sum;
-	pe_wp.bp_addr=(unsigned long)&sum; // address to start of memory region(offset address) to monitor
+	pe_wp.bp_addr=(unsigned long)&unused; // address to start of memory region(offset address) to monitor
 	pe_wp.bp_len=sizeof(int); 				 // just set it to 8bytes?
 	pe_wp.sample_period=1;
 	pe_wp.sample_type=PERF_SAMPLE_ADDR|PERF_SAMPLE_TID|PERF_SAMPLE_TIME;
@@ -550,10 +592,17 @@ memset(&pe_wp,0,sizeof(struct perf_event_attr));
 	pe_wp.exclude_kernel=1;
 	pe_wp.exclude_hv=1;
 
-	fd_wp=perf_event_open(&pe_wp,0,-1,-1,0);
-	if (fd_wp<0) {
-		fprintf(stderr,"Error opening leader %llx\n",pe_wp.config);
+	for(int i = 0; i<4; i++){
+		fd_wp[i]=perf_event_open(&pe_wp, (pid_t)atoi(argv[1]),-1,-1,0); //(struct perf_event_attr *attr, pid_t pid, int cpu, int group_fd, unsigned long flags);
+		if (fd_wp[i]<0) {
+			fprintf(stderr,"Error opening leader %llx\n",pe_wp.config);
+		}
+		else{
+			printf("File descriptor for WP no: %i opened\n",i);
+		}
+
 	}
+	
 
 	
 
@@ -567,17 +616,18 @@ memset(&pe_wp,0,sizeof(struct perf_event_attr));
 
 //mmap_wp=mmap(NULL, (1+MMAP_PAGES)*getpagesize(),
 //				 PROT_READ|PROT_WRITE, MAP_SHARED, fd_wp, 0);
+	for(int i = 0; i<4; i++){
 
- fcntl(fd_wp, F_SETFL, O_RDWR|O_NONBLOCK|O_ASYNC);
-        fcntl(fd_wp, F_SETSIG, SIGRTMIN);
-        fcntl(fd_wp, F_SETOWN,getpid());
+	fcntl(fd_wp[i], F_SETFL, O_RDWR|O_NONBLOCK|O_ASYNC);
+	fcntl(fd_wp[i], F_SETSIG, SIGRTMIN);
+	fcntl(fd_wp[i], F_SETOWN,getpid());
 
-	ioctl(fd_wp, PERF_EVENT_IOC_RESET, 0);
-	ret_wp=ioctl(fd_wp, PERF_EVENT_IOC_DISABLE,0);
+	ioctl(fd_wp[i], PERF_EVENT_IOC_RESET, 0);
+	ret_wp=ioctl(fd_wp[i], PERF_EVENT_IOC_DISABLE,0);
 
-	if (ret_wp<0) { fprintf(stderr,"Error with PERF_EVENT_IOC_DISABLE of group leader: ""%d %s\n",errno,strerror(errno));}
+	if (ret_wp<0) { fprintf(stderr,"Error with PERF_EVENT_IOC_DISABLE of one of the watchpoints: ""%d %s\n",errno,strerror(errno));}
 	
-
+	}
 
 
 
@@ -586,7 +636,7 @@ memset(&pe_wp,0,sizeof(struct perf_event_attr));
 
 #pragma endregion
 
-
+/*
 ////////////////////////////MATRIX///////////////////////////////
 #pragma region
 	printf("matrix multiplication\n\n");
@@ -608,7 +658,7 @@ memset(&pe_wp,0,sizeof(struct perf_event_attr));
 	
 
 #pragma endregion
-
+*/
 
 
 
@@ -619,7 +669,12 @@ memset(&pe_wp,0,sizeof(struct perf_event_attr));
 
 	ret2=ioctl(fd_load, PERF_EVENT_IOC_REFRESH,0);
 	printf("fd_load refresh\n");
-	ret2=ioctl(fd_wp, PERF_EVENT_IOC_REFRESH,0);
+
+	for(int i = 0; i<4; i++){
+		ret2=ioctl(fd_wp[i], PERF_EVENT_IOC_REFRESH,0);
+	
+
+	}
 	
 	
 
@@ -641,16 +696,22 @@ memset(&pe_wp,0,sizeof(struct perf_event_attr));
 
 	close(fd_store);
 	close(fd_load);
+	for(int i = 0; i<4; i++){
 
-	ioctl(fd_wp, PERF_EVENT_IOC_DISABLE,0);
+	ioctl(fd_wp[i], PERF_EVENT_IOC_DISABLE,0);
 	
 	//read_result=read(fd_wp,&bp_counter,sizeof(long long));
-	close(fd_wp);
+	close(fd_wp[i]);
+	}
 
 
 	//test_pass(test_string);
 #pragma endregion
-	
+	int status;
+	waitpid(process_id, &status, 0);
+	if (WIFEXITED(status)) {
+            printf("Profiled program finished with status: %d\n", WEXITSTATUS(status));
+	}
 	
 	return 0;
 
