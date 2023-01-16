@@ -158,7 +158,7 @@ Linux interface
 #include <asm/perf_regs.h>
 #endif
 
-#define SAMPLE_PERIOD 10000000
+#define SAMPLE_PERIOD 100000
 // 100000
 
 #define MMAP_DATA_SIZE 8
@@ -199,10 +199,11 @@ static long long prev_head_store;
 static long long prev_head_load;
 static int sum = 0, val = 1, unused = 5;
 int *ptr = &unused;
-static long long addr;
+static long long addr; //memcpy(&addr,&data[offset],sizeof(long long));
 static int fd_wp[4];
 struct perf_event_attr pe_wp;
 static int process_id;
+static pid_t pid;
 
 #define CHECK(x) ({int err = (x); \
 if (err) { \
@@ -222,6 +223,11 @@ struct validate_values {
         unsigned long branch_high;
 };
 
+volatile sig_atomic_t stop;
+
+void catch_sigint(int sig) {
+    stop = 1;
+}
 
 
 int test_quiet(void) {
@@ -308,12 +314,12 @@ static void our_handler(int signum, siginfo_t *info, void *uc) {
 
 	ret=ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
 	
-	printf("sum=%d, value=%d\n", sum, val);
+	//printf("sum=%d, value=%d\n", sum, val);
 	
 
 	if(fd == 3){
 
-		printf("store sample, sampled address = %p\n", &sum);	
+		printf("store sample\n"); // sampled address = %p\n", &sum);	
 
 		prev_head_store=perf_mmap_read(mmap_store,
 							 MMAP_DATA_SIZE,
@@ -326,10 +332,11 @@ static void our_handler(int signum, siginfo_t *info, void *uc) {
 							 0);
 	
 		count_total_store++;
+		printf("Store count= %d\n",count_total_store);
 	}
 
 	if(fd == 4){
-		printf("load sample, sampled address = %p\n\n", &val);
+		printf("load sample\n");// sampled address = %p\n\n", &val);
 
 		prev_head_load=perf_mmap_read(mmap_load,
 							 MMAP_DATA_SIZE,
@@ -342,6 +349,7 @@ static void our_handler(int signum, siginfo_t *info, void *uc) {
 							 0);
 
 		count_total_load++;
+		printf("Load count= %d\n",count_total_load);
 	}
 	
 	count_total_allSignal++;
@@ -352,21 +360,24 @@ static void our_handler(int signum, siginfo_t *info, void *uc) {
 	
 	
 	for(int i = 0; i<4; i++){
-		pe_wp.bp_addr = get_first_cache_line_address(addr+(i*8));
+		long long bpAddr = (unsigned long long)get_first_cache_line_address(addr)+(i*8);
+		pe_wp.bp_addr = bpAddr;
+		//printf("Current address: 0x%llx\n", (unsigned long long)get_first_cache_line_address(addr)+(i*8));
 		CHECK(ioctl(fd_wp[i], PERF_EVENT_IOC_MODIFY_ATTRIBUTES, (unsigned long) (&pe_wp)));
-		printf("Debug register number %d armed with addr : %llx \n", i, get_first_cache_line_address(addr));
+		printf("Debug register number %d armed with addr : %llx \n", i, bpAddr);
 		ret=ioctl(fd_wp[i], PERF_EVENT_IOC_ENABLE,1);
 		if(ret<0){
-			printf("Problem enabling WP no: %d",i)+1;
+			printf("Problem enabling WP no: %d",i);
 		}
 		else{
-			printf("\tWP no %d = Enabled\n",i+1);
+			printf("\tWP no %d = Enabled\n",i);
 
 		}
 		
 
 	}
 	//CHECK(ioctl(fd_wp, PERF_EVENT_IOC_MODIFY_ATTRIBUTES, (unsigned long) (&pe_wp)));
+	
 
 	
 	
@@ -383,12 +394,13 @@ static void our_handler(int signum, siginfo_t *info, void *uc) {
 
 int main(int argc, char **argv) 
 {
+	 
 
 	int ret,ret2,ret_wp;
 	int fd_store,fd_load;
 	int mmap_pages=1+MMAP_DATA_SIZE;
 	long long bp_counter;
-	printf("sum address= %p, val address = %p\n", (void*)&sum, (void*)&val);
+	//printf("sum address= %p, val address = %p\n", (void*)&sum, (void*)&val);
 
 	char test_string[]="Testing pebs latency...";
 
@@ -401,18 +413,10 @@ int main(int argc, char **argv)
 	{
 		process_id = atoi(argv[1]);
 		
-		pid_t pid = (pid_t) process_id;
-		pid_t child_pid = fork();
+		pid = (pid_t) process_id;
 
-		if (child_pid == 0) 
-		{
-			printf("Process ID: %d\n", process_id);
-			// code that does the profiling
-		} else 
-		{
-			wait(NULL);
-			printf("Profiling done.\n");
-		}
+		printf("Received process ID: %d\n", process_id);
+		
 	} else 
 	{
     fprintf(stderr, "Error: No process ID passed\n");
@@ -620,7 +624,8 @@ memset(&pe_wp,0,sizeof(struct perf_event_attr));
 
 	fcntl(fd_wp[i], F_SETFL, O_RDWR|O_NONBLOCK|O_ASYNC);
 	fcntl(fd_wp[i], F_SETSIG, SIGRTMIN);
-	fcntl(fd_wp[i], F_SETOWN,getpid());
+	fcntl(fd_wp[i], F_SETOWN, getpid());
+	
 
 	ioctl(fd_wp[i], PERF_EVENT_IOC_RESET, 0);
 	ret_wp=ioctl(fd_wp[i], PERF_EVENT_IOC_DISABLE,0);
@@ -663,6 +668,9 @@ memset(&pe_wp,0,sizeof(struct perf_event_attr));
 
 
 #pragma region clean up
+while(1){
+           sleep(1); 
+        }
 
 	ret=ioctl(fd_store, PERF_EVENT_IOC_REFRESH,0);
 	printf("fd_store refresh\n");
@@ -707,11 +715,8 @@ memset(&pe_wp,0,sizeof(struct perf_event_attr));
 
 	//test_pass(test_string);
 #pragma endregion
-	int status;
-	waitpid(process_id, &status, 0);
-	if (WIFEXITED(status)) {
-            printf("Profiled program finished with status: %d\n", WEXITSTATUS(status));
-	}
+		
+        printf("Profiled program finished.\n");
 	
 	return 0;
 
