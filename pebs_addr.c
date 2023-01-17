@@ -1,3 +1,8 @@
+//ask wp, tid
+//check cpu
+//one thread
+//multithread
+
 /*
 	PERF_SAMPLE_WEIGHT and PERF_SAMPLE_DATA_SRC need at least 3.10 kernel
 
