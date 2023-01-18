@@ -151,6 +151,8 @@ Linux interface
 #include <sys/poll.h>
 #include "perf_barrier.h"
 //#include "perf_event.h"
+#include <pthread.h>
+#include <inttypes.h>
 
 //#include "test_utils.h"
 //#include "perf_helpers.h"
@@ -210,11 +212,64 @@ struct perf_event_attr pe_wp;
 static int process_id;
 static pid_t pid;
 
+//static tid_t threadList[]; //profiled threads
+
+struct Node{
+	tid_t TID;
+	struct Node* next;
+};
+
+void addToList(node** head, tid_t TID) {
+    node* new_node = (node*) malloc(sizeof(node));
+    if (new_node == NULL) {
+        // Handle allocation failure
+        printf("Failed to allocate memory for new node\n");
+        return;
+    }
+	else{
+	new_node->TID = TID;
+    new_node->next = *head;
+    *head = new_node;
+	}
+	
+}
+
+bool checkList(struct Node* n, tid_t tid) // to see if a thread is unique
+{
+	bool unique = true;
+    while (n != NULL) {
+        printf(" %d ", n->TID)
+		//printf("tid: %" PRIu64 "\n", tid);
+		printf("The thread ID is: %lu\n", (unsigned long)thread_id);
+		
+		if(tid==TID)
+		{
+			unique=false;
+		}
+        n = n->next;
+    }
+	return unique;
+}
+
+void freeList(node* head) {
+    node* current = head;
+    while (current != NULL) {
+        node* next = current->next;
+        free(current);
+        current = next;
+    }
+}
+
 #define CHECK(x) ({int err = (x); \
 if (err) { \
 fprintf(stderr, "%s: Failed with %d on line %d of file %s\n", strerror(errno), err, __LINE__, __FILE__); \
 exit(-1); }\
 err;})
+
+bool checkUnique(tid_t tid){
+
+}
+
 
 static long long get_first_cache_line_address(long long addr) {
     return (addr & ~(CACHE_LINE_SIZE - 1));
@@ -595,7 +650,7 @@ memset(&pe_wp,0,sizeof(struct perf_event_attr));
 	pe_wp.bp_addr=(unsigned long)&unused; // address to start of memory region(offset address) to monitor
 	pe_wp.bp_len=sizeof(int); 				 // just set it to 8bytes?
 	pe_wp.sample_period=1;
-	pe_wp.sample_type=PERF_SAMPLE_ADDR|PERF_SAMPLE_TID|PERF_SAMPLE_TIME;
+	pe_wp.sample_type=PERF_SAMPLE_ADDR|PERF_SAMPLE_TID|PERF_SAMPLE_TIME|PERF_SAMPLE_CPU;
 	pe_wp.wakeup_events=1;
 	pe_wp.disabled=1;
 	pe_wp.exclude_kernel=1;
