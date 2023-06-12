@@ -1,0 +1,403 @@
+/*
+	PERF_SAMPLE_WEIGHT and PERF_SAMPLE_DATA_SRC need at least 3.10 kernel
+
+*/
+
+/* 
+
+one debug register monitors one memory region(ex: address 10 to 18)
+any access to that region activates the trap
+get offset address(beginning of cache line) of monitored variable 
+cache line = 64 bytes, each debug register 8 bytes x 4 registers 
+																= 32 bytes 
+																=> select 4 random regions to monitor
+monitor the cache line because we are focused 
+cache line granularity interthread communication 
+
+PMU & debug rx: 
+there are 4 counters(PMUs) in a cpu 
+	=> can monitor 4 events(not relevant as we monitor 2)
+PMUs and debug registers are different hardware 
+PMUs trigger interrupts, debug registers trigger traps
+perf_event_open used for both PMUs and debug registers
+
+no need to differentiate events(load/store) for debug register unlike PMU
+*pe.bp_addr=(unsigned long)&test_var; // offset of cacheline of address to be monitored*
+
+1) create watchpoint(debug register trapping) by perf event open
+2) replace(rearm) by using PERF_EVENT_IOC_MODIFY_ATTRIBUTES
+
+*/
+
+/* Intel Volume 3-B
+
+	17.4.9 -- Debug store area.
+		On overflow, the PEBS event *after* the overflow
+		records to the DS area the PEBS information
+		The Instruction pointer points to one after
+		the instruction causing the issue.
+
+	Linux handles this in arch/x86/kernel/cpu/perf_event_intel_ds.c
+
+	PEBS is configured in the DS area setup.  Sets min and max
+	values of the memory reason, and what value to reset the
+	counter to on interrupt.
+
+	18.7.1 Nehalem -- PEBS supported in all 4 general purpose counters
+		Load latency support added.
+
+		AnyThread, Edge, Invert, CMask must be zero in PEBS event
+
+	18.7.1.2 Latency measure
+		MEM_INST_RETIRED event and LATENCY_ABOVE_THRESHOLD umask
+
+		SR_PEBS_LD_LAT_THRESHOLD MSR programmed with the
+		latency of interest, only above is counted.
+		Minimum value for this is 3.
+
+		Loads are randomly chosen to be tagged to measure
+		latency info.  When PEBS is triggered, the most
+		recent randomly tagged value is reported.
+
+		Linear Address, Latency, and Source reported
+
+	18.9.4 Sandybridge Support
+
+		Like above but also stores.
+		Stores in PMC3 only
+
+		table 18-18
+
+	With precise store, once triggered, full latency info
+	captured on the next store that completes.
+
+
+	18.11	Haswell
+
+		No precise store.
+
+		Precise store replaced by Data Address Profiling.
+
+		MEM_UOPS_RETIRED.STLB_MISS_LOADS
+		MEM_UOPS_RETIRED.STLB_MISS_STORES
+		MEM_UOPS_RETIRED.LOCK_LOADS
+		MEM_UOPS_RETIRED.SPLIT_STORES
+		MEM_UOPS_RETIRED.SPLIT_LOADS
+		MEM_UOPS_RETIRED.ALL_STORES
+		MEM_UOPS_RETIRED.ALL_LOADS
+		MEM_LOAD_UOPS_LLC_MISS_RETIRED.LOCAL_DRAM
+		MEM_LOAD_UOPS_RETIRED.L1_HIT
+		MEM_LOAD_UOPS_RETIRED.L2_HIT
+		MEM_LOAD_UOPS_RETIRED.L3_HIT
+		MEM_LOAD_UOPS_RETIRED.L1_MISS
+		MEM_LOAD_UOPS_RETIRED.L2_MISS
+		MEM_LOAD_UOPS_RETIRED.L3_MISS
+		MEM_LOAD_UOPS_RETIRED.HIT_LFB
+		MEM_LOAD_UOPS_L3_HIT_RETIRED.XSNP_MISS
+		MEM_LOAD_UOPS_L3_HIT_RETIRED.XSNP_HIT
+		MEM_LOAD_UOPS_L3_HIT_RETIRED.XSNP_HITM
+		UOPS_RETIRED.ALL (if load or store is tagged)
+		MEM_LOAD_UOPS_LLC_HIT_RETIRED.XSNP_NONE
+
+		When enabled, the latency etc info is stored in the PEBS record
+
+***************
+Linux interface
+***************
+
+	Does not support old 32-bit p4/core PEBS record format(?)
+
+	Load latency, precise store, precise store haswell
+
+	pebs_fixup_ip() ?
+		makes fake Eventing info?
+		pebs.trap?
+
+	weight field holds pebs->lat
+
+	To get data src
+		PERF_SAMPLE_DATA_SRC
+*/
+
+
+#pragma region global vars, prototype function etc
+
+#define _GNU_SOURCE 1
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include <unistd.h>
+#include <fcntl.h>
+
+#include <errno.h>
+
+#include <signal.h>
+#include <sys/ptrace.h>
+#include <sys/mman.h>
+
+
+
+#include <sys/ioctl.h>
+#include <asm/unistd.h>
+#include <sys/prctl.h>
+#include <sys/wait.h>
+#include <sys/poll.h>
+#include "perf_barrier.h"
+//#include "perf_event.h"
+
+//#include "test_utils.h"
+//#include "perf_helpers.h"
+//#include "matrix_multiply.h"
+//#include "parse_record.h"
+#include <linux/perf_event.h>
+
+#include <linux/hw_breakpoint.h>
+#if defined(__x86_64__) || defined(__i386__) ||defined(__arm__)
+#include <asm/perf_regs.h>
+#endif
+
+#define SAMPLE_PERIOD 10000000
+// 100000
+
+#define MMAP_DATA_SIZE 8
+
+#define RAW_IBS_FETCH   1
+#define RAW_IBS_OP      2
+
+#define MMAP_PAGES 8
+
+size_t test_function(size_t a, size_t b) __attribute__((noinline));
+
+size_t test_function(size_t a, size_t b) {
+
+        size_t c;
+
+        /* The time thing is there to keep the compiler */
+        /* from optimizing this away.                   */
+
+        c=a+b+rand();
+        //if (!quiet) printf("\t\tFunction: %zd\n",c);
+        return c;
+
+}
+
+/* Global vars as I'm lazy */
+static int count_total_store=0;
+static int count_total_load=0;
+static int count_total_allSignal=0;
+static char *mmap_store;
+static char *mmap_load;
+static char *mmap_wp;
+static long sample_type;
+static long read_format;
+static int quiet;
+static long long prev_head_store;
+static long long prev_head_load;
+static int sum = 0, val = 1;
+static long long addr;
+static int fd_wp;
+
+
+
+
+struct validate_values {
+        int pid;
+        int tid;
+        int events;
+        unsigned long branch_low;
+        unsigned long branch_high;
+};
+
+
+
+int test_quiet(void) {
+
+        if (getenv("TESTS_QUIET")!=NULL) return 1;
+        return 0;
+}
+
+
+//not specifically for store -- mmap_store naming is a mistake --
+long long perf_mmap_read(
+                void *mmap_store, int mmap_size, long long prev_head,
+                int sample_type, int read_format, long long reg_mask,
+                struct validate_values *validate,
+                int quiet, int *events_read,
+                int raw_type );
+
+
+
+long perf_event_open(struct perf_event_attr *hw_event, 
+					pid_t pid,
+         			int cpu, 
+					int group_fd, 
+					unsigned long flags)
+{
+   int ret;
+
+   ret = syscall(__NR_perf_event_open, hw_event, pid, cpu, group_fd, flags);
+   return ret;
+}
+
+
+
+
+static struct signal_counts {
+	int in,out,msg,err,pri,hup,unknown,total;
+} count = {0,0,0,0,0,0,0,0};
+
+
+
+
+static void wp_handler(int signum, siginfo_t *oh, void *blah) {
+	printf("**************************wp handler starts\n");
+
+        int ret;
+
+	 int fd = oh->si_fd;
+
+     ret=ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
+	printf("**************************wp disabled\n");
+		
+
+		//switch not important
+        switch(oh->si_code) {
+                case POLL_IN:  count.in++;  break;
+                case POLL_OUT: count.out++; break;
+                case POLL_MSG: count.msg++; break;
+                case POLL_ERR: count.err++; break;
+                case POLL_PRI: count.pri++; break;
+                case POLL_HUP: count.hup++; break;
+                default: count.unknown++; break;
+        }
+
+        count.total++;
+		printf("\tcount total %d, trapped address: %llx\n", count.total, addr);
+
+        //ret=ioctl(fd, PERF_EVENT_IOC_ENABLE,1);
+		printf("**************************wp handler ends\n\n");
+
+        (void) ret;
+
+}
+
+
+static void our_handler(int signum, siginfo_t *info, void *uc) {
+
+	
+
+	printf("********************signal handler starts\n");
+	int ret;
+
+	int fd = info->si_fd;
+	printf("fd=%d\n",fd);
+
+	ret=ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
+	
+	printf("sum=%d, value=%d\n", sum, val);
+	
+
+	if(fd == 3){
+
+		printf("store sample, sampled address = %p\n", &sum);	
+
+		prev_head_store=perf_mmap_read(mmap_store,
+							 MMAP_DATA_SIZE,
+							 prev_head_store,
+							 sample_type,read_format,
+							 0, /* reg_mask */
+							 NULL, /*validate */
+							 quiet,
+							 NULL, /* events read */
+							 0);
+	
+		count_total_store++;
+	}
+
+	if(fd == 4){
+		printf("load sample, sampled address = %p\n\n", &val);
+
+		prev_head_load=perf_mmap_read(mmap_load,
+							 MMAP_DATA_SIZE,
+							 prev_head_load,
+							 sample_type,read_format,
+							 0, /* reg_mask */
+							 NULL, /*validate */
+							 quiet,
+							 NULL, /* events read */
+							 0);
+
+		count_total_load++;
+	}
+	
+	count_total_allSignal++;
+
+
+	ret=ioctl(fd, PERF_EVENT_IOC_REFRESH, 1);
+
+	ret=ioctl(fd_wp, PERF_EVENT_IOC_ENABLE,1);
+	printf("\n**************************wp enabled\n");
+
+	printf("**************************signal handler ends\n\n");
+
+	(void) ret;
+	
+
+}
+
+
+
+
+int main(int argc, char **argv) 
+{
+
+	int ret,ret2,ret_wp;
+	int fd_store,fd_load;
+	int mmap_pages=1+MMAP_DATA_SIZE;
+	long long bp_counter;
+
+	char test_string[]="Testing pebs latency...";
+
+	quiet=test_quiet();
+
+	if (!quiet) 
+		printf("This tests the intel PEBS latency.\n");
+
+
+
+
+/////////////////////////PMU SIGACTION//////////////////////////
+#pragma region
+	struct sigaction sa;
+
+	memset(&sa, 0, sizeof(struct sigaction));
+	sa.sa_sigaction = our_handler;
+	sa.sa_flags = SA_SIGINFO;
+
+	if (sigaction( SIGIO, &sa, NULL) < 0) 
+	{
+			fprintf(stderr,"Error setting up signal handler\n");
+			exit(1);
+	}
+#pragma endregion
+
+
+
+
+////////////////////PMU PERF EVENT/////////////////////////////////
+#pragma region
+	struct perf_event_attr pe,pe_load;
+
+	memset(&pe,0,sizeof(struct perf_event_attr));
+	memset(&pe_load,0,sizeof(struct perf_event_attr));
+
+	sample_type=PERF_SAMPLE_ADDR|PERF_SAMPLE_TID|PERF_SAMPLE_TIME;
+	read_format=0;
+
+	pe.type=PERF_TYPE_RAW;					pe_load.type=PERF_TYPE_RAW;
+	pe.size=sizeof(struct perf_event_attr); pe_load.size=sizeof(struct perf_event_attr);
+	
+
+	//MEM_UOPS_RETIRED:ALL_STORES	 MEM_UOPS_RETIRED:ALL_LOADS 
