@@ -56,16 +56,15 @@ long perf_event_open(struct perf_event_attr *hw_event, pid_t pid,
    return ret;
 }
 
-static int fd_wp;
+static int fd1;
 
 
 static void our_handler(int signum,siginfo_t *oh, void *blah) {
 
         int ret;
 
-        ret=ioctl(fd_wp, PERF_EVENT_IOC_DISABLE, 0);
+        ret=ioctl(fd1, PERF_EVENT_IOC_DISABLE, 0);
 
-		//switch not important
         switch(oh->si_code) {
                 case POLL_IN:  count.in++;  break;
                 case POLL_OUT: count.out++; break;
@@ -78,7 +77,7 @@ static void our_handler(int signum,siginfo_t *oh, void *blah) {
 
         count.total++;
 
-        ret=ioctl(fd_wp, PERF_EVENT_IOC_ENABLE,1);
+        ret=ioctl(fd1, PERF_EVENT_IOC_ENABLE,1);
 
         (void) ret;
 
@@ -87,7 +86,7 @@ static void our_handler(int signum,siginfo_t *oh, void *blah) {
 
 int main(int argc, char** argv) {
 
-	struct perf_event_attr pe_wp;
+	struct perf_event_attr pe;
 	struct sigaction sa;
 	int read_result;
 	int test_var = 0;
@@ -109,36 +108,43 @@ int main(int argc, char** argv) {
 
 	/* Create a sampled event and attach to child */
 
-	memset(&pe_wp,0,sizeof(struct perf_event_attr));
-	pe_wp.type=PERF_TYPE_BREAKPOINT;
-	pe_wp.size=sizeof(struct perf_event_attr);
-	pe_wp.config=0;
-	pe_wp.bp_type=HW_BREAKPOINT_RW;
-	pe_wp.bp_addr=(unsigned long)&test_var; // address to start of memory region(offset address) to monitor
-	pe_wp.bp_len=sizeof(int); 				 // just set it to 8bytes?
-	pe_wp.sample_period=1;
-	pe_wp.sample_type=PERF_SAMPLE_IP;
-	pe_wp.wakeup_events=1;
-	pe_wp.disabled=1;
-	pe_wp.exclude_kernel=1;
-	pe_wp.exclude_hv=1;
-	
+	memset(&pe,0,sizeof(struct perf_event_attr));
 
-	fd_wp=perf_event_open(&pe_wp,0,-1,-1,0);
-	if (fd_wp<0) {
-		fprintf(stderr,"Error opening leader %llx\n",pe_wp.config);
+	pe.type=PERF_TYPE_BREAKPOINT;
+	pe.size=sizeof(struct perf_event_attr);
+	pe.config=0;
+
+	pe.bp_type=HW_BREAKPOINT_RW;
+	pe.bp_addr=(unsigned long)&test_var;
+	pe.bp_len=sizeof(int);
+	/* 1 million.  Tried 100k but that was too short on */
+	/* faster machines, likely triggered overflow while */
+	/* poll still was being handled?                    */
+	pe.sample_period=1;
+	pe.sample_type=PERF_SAMPLE_IP;
+	pe.wakeup_events=1;
+	//pe.read_format=PERF_FORMAT_GROUP|PERF_FORMAT_ID;
+	pe.disabled=1;
+	//pe.pinned=1;
+	pe.exclude_kernel=1;
+	pe.exclude_hv=1;
+	//pe.wakeup_events=1;
+
+	fd1=perf_event_open(&pe,0,-1,-1,0);
+	if (fd1<0) {
+		fprintf(stderr,"Error opening leader %llx\n",pe.config);
 	}
 
 	//our_mmap=mmap(NULL, (1+MMAP_PAGES)*getpagesize(),
-	//		PROT_READ|PROT_WRITE, MAP_SHARED, fd_wp, 0);
+	//		PROT_READ|PROT_WRITE, MAP_SHARED, fd1, 0);
 
 
-        fcntl(fd_wp, F_SETFL, O_RDWR|O_NONBLOCK|O_ASYNC);
-        fcntl(fd_wp, F_SETSIG, SIGIO);
-        fcntl(fd_wp, F_SETOWN,getpid());
+        fcntl(fd1, F_SETFL, O_RDWR|O_NONBLOCK|O_ASYNC);
+        fcntl(fd1, F_SETSIG, SIGIO);
+        fcntl(fd1, F_SETOWN,getpid());
 
-	ioctl(fd_wp, PERF_EVENT_IOC_RESET, 0);
-	int ret=ioctl(fd_wp, PERF_EVENT_IOC_ENABLE,0);
+	ioctl(fd1, PERF_EVENT_IOC_RESET, 0);
+	int ret=ioctl(fd1, PERF_EVENT_IOC_ENABLE,0);
 
 	if (ret<0) {
 		fprintf(stderr,"Error with PERF_EVENT_IOC_ENABLE of group leader: "
@@ -148,12 +154,12 @@ int main(int argc, char** argv) {
 	//for(int i = 0; i < 100000000; i++);
 	for(int i=0;i<10000;i++) {
                 //sum+=test_function(i,sum);
-		test_var += i;
+		test_var = i;
         }
-	ioctl(fd_wp, PERF_EVENT_IOC_DISABLE,0);
+	ioctl(fd1, PERF_EVENT_IOC_DISABLE,0);
 	
-	read_result=read(fd_wp,&bp_counter,sizeof(long long));
-	close(fd_wp);
+	read_result=read(fd1,&bp_counter,sizeof(long long));
+	close(fd1);
 
 	printf("counter value: %lld, signal count: %d\n", bp_counter, count.total);
 	/*count.total=count.in+count.hup;

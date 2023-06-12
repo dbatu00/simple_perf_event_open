@@ -1,277 +1,148 @@
-//use cpu number as tid
-//check cpu
-//one thread
-//multithread
+/*
+	PERF_SAMPLE_WEIGHT and PERF_SAMPLE_DATA_SRC need at least 3.10 kernel
 
-
-//in dolap 88 logical cores
-//44 physical cores
-//each physical core has its own set of debug registers
-//when 2 threads run on a 
-
-/* COMDETECTIVE
-
-ComDetective tells each thread in a multithreaded program to configure their own PMU for 
-detecting inter-thread communications of the program.
-PMU's(performance monitoring unit of Precise Event Based Sampling) return information such
-as effective address involved in a memory access that causes a threshold overflow (ex. 10000 loads) 
-to the profiled programs threads using signals.
-The samples are handled by the profiled thread.
-This requires modifying the code of the monitored program.
-The threads check a global table to see if another thread published the same address:
-	if so, there is a communication and a communication matrix is updated
-	if not, the address get published with a timestamp and publishing thread's ID.
-	In both cases the thread selects a random address that was published by another thread to monitor 
-	and arms its debug registers with the half of the cache line that the address belongs to.
-	-Half because there are 4 debug registers per thread, a debug register holds 8 bytes and 
-	a cache line is 64 bytes(4 x 8 / 64) 
-	-Cache line becuase aimed granularity is cache line level inter-thread communication which is 
-	a common slow-down factor
-When a thread experiences a trap(accessing an address that is in one of their debug registers)
-communication is reported.
-
-ComDetective is built on HPC Tool Kit
 */
 
-/* COMDETECTIVE RECONSTRUCTION FOR SUPERTWIN
-In SuperTwin the monitored program cannot be changed thus, the monitored threads cant handle
-their own samples and traps. 
-In Intel processors that fall under the category of  Architectural Performance Monitoring Version 1
-and upper versions, each logical thread can be assigned a set of PMUs and a set of debug registers.
-To monitor a thread the CPU ID of the thread is required. This is done by passing the CPU ID's that
-the multithreaded monitored program can run on to the profiling process. The threads should not change
-CPUs (migrate to another CPU) during execution for accuracy. 
-For each CPU ID passed, a profiler thread is created to configure the PMU's, debug registers and 
-handle samples, traps. 
-Each profiler thread: 
-	Set two perf_event_attribute structs to monitor loads and stores.
-	Make two perf_event_open system call (one for store, one for load) with the pid set to 0 and CPU 
-	set to monitored CPU number. 
-	Debug registers are configured similiarly at each sample.
-	The address used to arm each debug register and the ID of the thread that published that address
-	need to be kept to report communication properly.
-	The operating system sees each logical core as a CPU thus, monitoring a CPU monitors the thread
-	that runs on the CPU.
-	Handles samples and traps as described in COMDETECTIVE
+
+
+/* Intel Volume 3-B
+
+	17.4.9 -- Debug store area.
+		On overflow, the PEBS event *after* the overflow
+		records to the DS area the PEBS information
+		The Instruction pointer points to one after
+		the instruction causing the issue.
+
+	Linux handles this in arch/x86/kernel/cpu/perf_event_intel_ds.c
+
+	PEBS is configured in the DS area setup.  Sets min and max
+	values of the memory reason, and what value to reset the
+	counter to on interrupt.
+
+	18.7.1 Nehalem -- PEBS supported in all 4 general purpose counters
+		Load latency support added.
+
+		AnyThread, Edge, Invert, CMask must be zero in PEBS event
+
+	18.7.1.2 Latency measure
+		MEM_INST_RETIRED event and LATENCY_ABOVE_THRESHOLD umask
+
+		SR_PEBS_LD_LAT_THRESHOLD MSR programmed with the
+		latency of interest, only above is counted.
+		Minimum value for this is 3.
+
+		Loads are randomly chosen to be tagged to measure
+		latency info.  When PEBS is triggered, the most
+		recent randomly tagged value is reported.
+
+		Linear Address, Latency, and Source reported
+
+	18.9.4 Sandybridge Support
+
+		Like above but also stores.
+		Stores in PMC3 only
+
+		table 18-18
+
+	With precise store, once triggered, full latency info
+	captured on the next store that completes.
+
+
+	18.11	Haswell
+
+		No precise store.
+
+		Precise store replaced by Data Address Profiling.
+
+		MEM_UOPS_RETIRED.STLB_MISS_LOADS
+		MEM_UOPS_RETIRED.STLB_MISS_STORES
+		MEM_UOPS_RETIRED.LOCK_LOADS
+		MEM_UOPS_RETIRED.SPLIT_STORES
+		MEM_UOPS_RETIRED.SPLIT_LOADS
+		MEM_UOPS_RETIRED.ALL_STORES
+		MEM_UOPS_RETIRED.ALL_LOADS
+		MEM_LOAD_UOPS_LLC_MISS_RETIRED.LOCAL_DRAM
+		MEM_LOAD_UOPS_RETIRED.L1_HIT
+		MEM_LOAD_UOPS_RETIRED.L2_HIT
+		MEM_LOAD_UOPS_RETIRED.L3_HIT
+		MEM_LOAD_UOPS_RETIRED.L1_MISS
+		MEM_LOAD_UOPS_RETIRED.L2_MISS
+		MEM_LOAD_UOPS_RETIRED.L3_MISS
+		MEM_LOAD_UOPS_RETIRED.HIT_LFB
+		MEM_LOAD_UOPS_L3_HIT_RETIRED.XSNP_MISS
+		MEM_LOAD_UOPS_L3_HIT_RETIRED.XSNP_HIT
+		MEM_LOAD_UOPS_L3_HIT_RETIRED.XSNP_HITM
+		UOPS_RETIRED.ALL (if load or store is tagged)
+		MEM_LOAD_UOPS_LLC_HIT_RETIRED.XSNP_NONE
+
+		When enabled, the latency etc info is stored in the PEBS record
+
+***************
+Linux interface
+***************
+
+	Does not support old 32-bit p4/core PEBS record format(?)
+
+	Load latency, precise store, precise store haswell
+
+	pebs_fixup_ip() ?
+		makes fake Eventing info?
+		pebs.trap?
+
+	weight field holds pebs->lat
+
+	To get data src
+		PERF_SAMPLE_DATA_SRC
 */
 
-/* some notes
-When a process/thread receives a signal it jumps to the execution of the signal handler
-PMU samples and trap activation notice are delivered to a process/thread via signals
-If a thread experiences a sample/trap while its handling a signal, the execution can get broken
-Ex: On a sample the thread arms its debug registers and keeps a record of the ID 
-of the thread that published the address. As no information comes from traps other than activation
-notice, recorded information is used to deduct which thread that the profiled thread communicated with.
-If this scenario happens, the reported communication is wrong:
-The thread receives a sample and arms its debug registers with the address that another thread published
-(lets say T1).
-The thread receives another sample and updates the thread ID variable with the ID of a thread that published
-an address on the global board(lets say T2).
-The thread receives a trap notice before re-arming its debug registers, the communication is reported
-to be between monitored thread and T2 while it should've been between monitored thread and T1.
-To overcome this, when a sample is received, the debug registers need to be disabled as the first thing 
-Sample signals can also intervene so its best to disable both load and store PMUs when a sample is received
 
-one debug register monitors one memory region(ex: address 10 to 18)
-any access to that region activates the trap
-get offset address(beginning of cache line) of monitored variable 
-cache line = 64 bytes, each debug register 8 bytes x 4 registers 
-																= 32 bytes 
-																=> select 4 random regions to monitor
-monitor the cache line because we are focused on
-cache-line granularity inter-thread communication 
 
-PMU & debug rx: 
-there are 4 counters(PMUs) in a cpu 
-	=> can monitor 4 events(not relevant as we monitor 2)
-PMUs and debug registers are different hardware 
-PMUs trigger interrupts, debug registers trigger traps
-perf_event_open used for both PMUs and debug registers
-
-no need to differentiate events(load/store) for debug register unlike PMU
-as the profiling thread knows which address it armed a debug register with,
-it can deduct what address caused an interrupt
-*pe.bp_addr=(unsigned long)&test_var; // offset of cacheline of address to be monitored*
-
-1) create watchpoint(debug register trapping) by perf event open
-2) re-arm by using PERF_EVENT_IOC_MODIFY_ATTRIBUTES
-*/
 
 #define _GNU_SOURCE 1
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include <unistd.h>
+#include <fcntl.h>
+
+#include <errno.h>
+
+#include <signal.h>
+#include <sys/mman.h>
+
+#include <sys/ioctl.h>
+#include <asm/unistd.h>
+#include <sys/prctl.h>
+#include "perf_barrier.h"
+//#include "perf_event.h"
 
 //#include "test_utils.h"
 //#include "perf_helpers.h"
 //#include "matrix_multiply.h"
 //#include "parse_record.h"
-//#include "perf_event.h"
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <errno.h>
-#include <signal.h>
-#include <sys/ptrace.h>
-#include <sys/mman.h>
-#include <sys/ioctl.h>
-#include <asm/unistd.h>
-#include <sys/prctl.h>
-#include <sys/wait.h>
-#include <sys/poll.h>
-#include "perf_barrier.h"
-#include <pthread.h>
-#include <inttypes.h>
 #include <linux/perf_event.h>
-#include <linux/hw_breakpoint.h>
-
 #if defined(__x86_64__) || defined(__i386__) ||defined(__arm__)
 #include <asm/perf_regs.h>
 #endif
 
-#define SAMPLE_PERIOD 1000000 // 100000 original value
-							  // I usually select higher values to get less results so 
-							  // that inspecting the output is easier
-
+#define SAMPLE_PERIOD 100000
 
 #define MMAP_DATA_SIZE 8
 
 #define RAW_IBS_FETCH   1
 #define RAW_IBS_OP      2
 
-#define MMAP_PAGES 8
-
-#define CACHE_LINE_SIZE 64
-
-#define MAX_THREADS 20 // not used
-
-#define NULL_TID_VALUE -1
-
-typedef int TID_TYPE;
-
-typedef enum {false, true} bool;
-
-size_t test_function(size_t a, size_t b) __attribute__((noinline));
-
-size_t test_function(size_t a, size_t b) {
-
-        size_t c;
-
-        /* The time thing is there to keep the compiler */
-        /* from optimizing this away.                   */
-
-        c=a+b+rand();
-        //if (!quiet) printf("\t\tFunction: %zd\n",c);
-        return c;
-
-}
-
 /* Global vars as I'm lazy */
-static int count_total_store=0;
-static int count_total_load=0;
-static int count_total_allSignal=0;
-
-
-static char *mmap_store; //mmaps are used to store information about samples
-static char *mmap_load;  //file descriptor belonging to a perf event call needs 
-						 //to be used as a variable for the sample
-   						 // => each type of sample(load/store) requires its own mmap
-						 //these need to be per thread
-
-
-/* NOT USED
-static char *mmap_wp; 
-static char *mmap_storeList[MAX_THREADS]; 
-static char *mmap_loadList[MAX_THREADS];
- */
-
-static long sample_type; //decides what information is received on a sample
+static int count_total=0;
+static char *our_mmap;
+static long sample_type;
 static long read_format;
 static int quiet;
-static long long prev_head_store;
-static long long prev_head_load;
-static int sum = 0, val = 1, unused = 5; //test variables that can be used to run 
-										 //matrix multiplication assembly code below
-int *ptr = &unused; //wp's need an address for the perf event attribute struct
-					//wp's can be disabled before monitoring starts
+static long long prev_head;
 
 
-static long long addr;  //global addr valuable that gets updated on a new sample
-						//how it gets updated can be found by searching the comment below
-						//memcpy(&addr,&data[offset],sizeof(long long));
-						
-
-
-static int fd_wp[4]; // 4 watchpoint file descriptors for 4 watchpoints of each thread
-struct perf_event_attr pe_wp; //perf_event_attr is used in a perf event open call to configure PMU and dbg rx
-
-/* NOT USED
-static int process_id; //id of the process to be monitored
-static pid_t pid;
-
-
-
-static TID_TYPE thread_ids[MAX_THREADS];
-static TID_TYPE sampleTid; //very risky because most use cases of sampleTID requires it to be an int
-
-
-void init_thread_ids(){
-    for(int i=0; i<MAX_THREADS; i++){
-        thread_ids[i] = NULL_TID_VALUE; 
-    }
-}
-
-
-bool threadUniqueCheck(TID_TYPE TID){
-	bool unique = true;
-	for(int i=0; i<MAX_THREADS; i++){
-		if(TID == thread_ids[i])
-		{
-			unique = false;
-		}
-	}
-	return unique;
-
-}
-
-void addThreadToList(TID_TYPE TID){
-	for(int i=0; i<MAX_THREADS; i++)
-	{
-		if(thread_ids[i] == NULL_TID_VALUE) 
-		{
-			thread_ids[i] = TID;
-			return;
-		} 
-    }
-		
-	printf("An error occured during addThreadToList function");
-	
-
-}
-
-void printThreadList()
-{	printf("Thread List:\t");
-	for(int i=0; i<MAX_THREADS; i++)
-	{
-		printf("%d ", thread_ids[i]); //could cause an error if tid type is not int 
-	}
-	printf("\n-1 = empty\n");
-
-}
-*/
-
-#define CHECK(x) ({int err = (x); \
-if (err) { \
-fprintf(stderr, "%s: Failed with %d on line %d of file %s\n", strerror(errno), err, __LINE__, __FILE__); \
-exit(-1); }\
-err;})
-
-
-
-static long long get_first_cache_line_address(long long addr) //returns the offset address of a cache 
-															  //line for a given address in that cache line
-{
-    return (addr & ~(CACHE_LINE_SIZE - 1));
-}
 
 struct validate_values {
         int pid;
@@ -281,35 +152,22 @@ struct validate_values {
         unsigned long branch_high;
 };
 
-volatile sig_atomic_t stop;
-
-void catch_sigint(int sig) {
-    stop = 1;
-}
-
-
 int test_quiet(void) {
 
         if (getenv("TESTS_QUIET")!=NULL) return 1;
         return 0;
 }
 
-
-
-long long perf_mmap_read(
+long long 
+perf_mmap_read(
                 void *our_mmap, int mmap_size, long long prev_head,
                 int sample_type, int read_format, long long reg_mask,
                 struct validate_values *validate,
                 int quiet, int *events_read,
                 int raw_type );
 
-
-
-long perf_event_open(struct perf_event_attr *hw_event, 
-					pid_t pid,
-         			int cpu, 
-					int group_fd, 
-					unsigned long flags)
+long perf_event_open(struct perf_event_attr *hw_event, pid_t pid,
+         int cpu, int group_fd, unsigned long flags)
 {
    int ret;
 
@@ -317,646 +175,171 @@ long perf_event_open(struct perf_event_attr *hw_event,
    return ret;
 }
 
+static void our_handler(int signum, siginfo_t *info, void *uc) {
 
-
-
-static struct signal_counts {
-	int in,out,msg,err,pri,hup,unknown,total;
-} count = {0,0,0,0,0,0,0,0};
-
-
-
-
-static void wp_handler(int signum, siginfo_t *oh, void *blah) {
-	printf("*********WP HANDLER - START*********\n");
-
-    int ret;
-
-	int fd = oh->si_fd; //fd number of the wp trap
-						//When any process starts, then that process'
-						//file descriptors table’s fd(file descriptor)
-						//0, 1, 2 open automatically -geeksforgeeks.org
-						//user opened file descriptors will have consequtive
-						//numbers (3,4,5 etc.)
-						//the fd is used to access and modify perf event open file
-
-    ret=ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
-	printf("\tWP = Disabled\n");
-		
-
-		//not important
-        switch(oh->si_code) {
-                case POLL_IN:  count.in++;  break;
-                case POLL_OUT: count.out++; break;
-                case POLL_MSG: count.msg++; break;
-                case POLL_ERR: count.err++; break;
-                case POLL_PRI: count.pri++; break;
-                case POLL_HUP: count.hup++; break;
-                default: count.unknown++; break;
-        }
-
-        count.total++;
-		printf("\tcount total %d, trapped address: %llx\n", count.total, addr); // addr is for debugging purposes
-																				// id of the publisher thread of 
-																				// the address needs to be added
-
-        //ret=ioctl(fd, PERF_EVENT_IOC_ENABLE,1);
-		printf("**********WP HANDLER - END*********\n\n\n");
-
-        (void) ret;
-
-}
-
-
-static void sample_handler(int signum, siginfo_t *info, void *uc) {
-
-	// watchpoints need to be disabled here
-
-	printf("*********SIGNAL HANDLER - START*********\n");
 	int ret;
 
-	int fd = info->si_fd; //by keeping track of fds as in load PMU fd is 3,
-						  //store PMU fd is 4 etc. one can differentiate between
-						  //load samples and store samplesx
-						  
-	
+	int fd = info->si_fd;
 
-	ret=ioctl(fd, PERF_EVENT_IOC_DISABLE, 0); //both PMUs need to be disabled here
-											  // and re-enabled later
-	
-	//printf("sum=%d, value=%d\n", sum, val);
-	
-	//function call above activates the perf_mmap_read function and outputs values 
-	//specified in the sample_type to command line interface
-	prev_head_store=perf_mmap_read(mmap_store,
-							 MMAP_DATA_SIZE,
-							 prev_head_store,
-							 sample_type,read_format,
-							 0, /* reg_mask */
-							 NULL, /*validate */
-							 quiet,
-							 NULL, /* events read */
-							 0);
-	
-	if(0) //its cumbersome to comment out perf_mmap_read function calls
-	{
+	ret=ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
 
-	//there needs to be different actions taken on a sample for store
-	//samples and load samples, fd number can be used to differentiate them
-	if(fd == 3){
-
-		printf("store sample\n"); // sampled address = %p\n", &sum);	
-
-		prev_head_store=perf_mmap_read(mmap_load,
-							 MMAP_DATA_SIZE,
-							 prev_head_store,
-							 sample_type,read_format,
-							 0, /* reg_mask */
-							 NULL, /*validate */
-							 quiet,
-							 NULL, /* events read */
-							 0);
-		
-		count_total_store++;
-		printf("Store count= %d\n",count_total_store);
-	}
-
-	if(fd == 4){
-		printf("load sample\n");// sampled address = %p\n\n", &val);
-
-		prev_head_load=perf_mmap_read(mmap_load,
-							 MMAP_DATA_SIZE,
-							 prev_head_load,
-							 sample_type,read_format,
-							 0, /* reg_mask */
-							 NULL, /*validate */
-							 quiet,
-							 NULL, /* events read */
-							 0);
-		/*NOT USED 
-		if(threadUniqueCheck(sampleTid) == true){
-			addThreadToList(sampleTid);
-			printThreadList();
-		}
-		*/
-		count_total_load++;
-		printf("Load count= %d\n",count_total_load);
-	}
-	}
-	
-	count_total_allSignal++;
-	printf("Sample count %d\n", count_total_allSignal);
-
+#if 1
+	prev_head=perf_mmap_read(our_mmap,MMAP_DATA_SIZE,prev_head,
+		sample_type,read_format,
+		0, /* reg_mask */
+		NULL, /*validate */
+		quiet,
+		NULL, /* events read */
+		0);
+#endif
+	count_total++;
 
 	ret=ioctl(fd, PERF_EVENT_IOC_REFRESH, 1);
 
-	
-	/* RE ARM AND ACTIVATE WATCHPOINTS
-	for(int i = 0; i<4; i++){
-		//this selects first four 8-byte memory regions that belong to the cache line of the sampled address
-		//it should be randomized
-		long long bpAddr = (unsigned long long)get_first_cache_line_address(addr)+(i*8);
-		pe_wp.bp_addr = bpAddr;
-		//printf("Current address: 0x%llx\n", (unsigned long long)get_first_cache_line_address(addr)+(i*8));
-		CHECK(ioctl(fd_wp[i], PERF_EVENT_IOC_MODIFY_ATTRIBUTES, (unsigned long) (&pe_wp)));
-		printf("Debug register number %d armed with addr : %llx \n", i, bpAddr);
-		ret=ioctl(fd_wp[i], PERF_EVENT_IOC_ENABLE,1);
-		if(ret<0){
-			printf("Problem enabling WP no: %d",i);
-		}
-		else{
-			printf("\tWP no %d = Enabled\n",i);
-
-		}
-		
-
-	}
-	*/
-	//Check if the re-arming call is successfull
-	//CHECK(ioctl(fd_wp, PERF_EVENT_IOC_MODIFY_ATTRIBUTES, (unsigned long) (&pe_wp)));  
-
-	printf("*********SIGNAL HANDLER - END*********\n\n\n");
-
 	(void) ret;
-	
 
 }
 
 
+int main(int argc, char **argv) {
 
-
-int main(int argc, char **argv) 
-{
-	 
-
-	int ret,ret2,ret_wp;
-	int fd_store,fd_load;
+	int ret;
+	int fd;
 	int mmap_pages=1+MMAP_DATA_SIZE;
-	//long long bp_counter;
-	//printf("sum address= %p, val address = %p\n", (void*)&sum, (void*)&val);
 
+	struct perf_event_attr pe;
+
+	struct sigaction sa;
 	char test_string[]="Testing pebs latency...";
 
 	quiet=test_quiet();
-	//init_thread_ids();
 
-	
-	//last value is PID of the process to be monitored
-	//rest are the CPUs(logical cores(threads)) that the 
-	//profiled process will be using
-	printf("CPUs: ");
-    for (int i = 1; i < argc; i++) {
-        int value = atoi(argv[i]);
-		if(i==argc-1)
-		{
-			printf("\nProfiled Process' ID: %d\n ", value);
-			pid = (pid_t) value;
+	if (!quiet) printf("This tests the intel PEBS latency.\n");
 
-		}
-		else{
-			printf("%d ", value);
-		}
-        
-    }
+	        memset(&sa, 0, sizeof(struct sigaction));
+        sa.sa_sigaction = our_handler;
+        sa.sa_flags = SA_SIGINFO;
 
-	if (!quiet) 
-		printf("\nThis tests the intel PEBS latency.\n");
-
-	
-//create a thread for each cpu --pass only cpu info
-//threads do their own config + handling
-//global hash board
-
-
-/////////////////////////PMU SIGACTION//////////////////////////
-#pragma region
-	struct sigaction sa;
-
-	memset(&sa, 0, sizeof(struct sigaction));
-	sa.sa_sigaction = sample_handler; //channel this signal to this handler
-	sa.sa_flags = SA_SIGINFO;
-
-
-	//first value(SIGIO) indicates which signal receiving channel this handler is assigned to
-	if (sigaction( SIGIO, &sa, NULL) < 0) 
-	{
-			fprintf(stderr,"Error setting up signal handler\n");
-			exit(1);
-	}
-#pragma endregion
-
-
-
-
-////////////////////PMU PERF EVENT/////////////////////////////////
-#pragma region
-	struct perf_event_attr pe,pe_load; //pe should be pe_store 
-
-	memset(&pe,0,sizeof(struct perf_event_attr));
-	memset(&pe_load,0,sizeof(struct perf_event_attr));
-
-	//information of these values will be received on a sample
-	sample_type=PERF_SAMPLE_ADDR|PERF_SAMPLE_TID|PERF_SAMPLE_TIME|PERF_SAMPLE_CPU;
-	
-
-	//MEM_UOPS_RETIRED:ALL_STORES	 MEM_UOPS_RETIRED:ALL_LOADS 
- 	//pe.config = 0x5382d0;			 pe.config = 0x5381d0;
-	//pe.config = 0x82d0;			 pe.config = 0x81d0;	
-	pe.config = 0x82d0; 			 pe_load.config = 0x81d0; //used to specify which event to count	
-	
-
-	//no need to change
-	read_format=0;
-	pe.sample_period=SAMPLE_PERIOD;  		pe_load.sample_period=SAMPLE_PERIOD; 
-	pe.sample_type=sample_type;		 		pe_load.sample_type=sample_type;
-    pe.type=PERF_TYPE_RAW;					pe_load.type=PERF_TYPE_RAW;
-	pe.size=sizeof(struct perf_event_attr); pe_load.size=sizeof(struct perf_event_attr);
-	pe.read_format=read_format; 	 		pe_load.read_format=read_format;
-	pe.disabled=1;							pe_load.disabled=1;
-	pe.pinned=1;					 		pe_load.pinned=1;
-	pe.exclude_kernel=1;					pe_load.exclude_kernel=1;
-	pe.exclude_hv=1; 						pe_load.exclude_hv=1;
-	pe.wakeup_events=1;				 		pe_load.wakeup_events=1;
-	pe.precise_ip=2;				 		pe_load.precise_ip=2;
-
-	#pragma region perf event guide
-	/*
-	 pid == 0 and cpu == -1
-              This measures the calling process/thread on any CPU.
-
-       pid == 0 and cpu >= 0
-              This measures the calling process/thread only when running
-              on the specified CPU.
-
-       pid > 0 and cpu == -1
-              This measures the specified process/thread on any CPU.
-
-       pid > 0 and cpu >= 0
-              This measures the specified process/thread only when
-              running on the specified CPU.
-
-       pid == -1 and cpu >= 0
-              This measures all processes/threads on the specified CPU.
-              This requires CAP_PERFMON (since Linux 5.8) or
-              CAP_SYS_ADMIN capability or a
-              /proc/sys/kernel/perf_event_paranoid value of less than 1.
-
-	*/
-	#pragma endregion
-
-
-	//below is creating fd couples for each CPU
-	//this approach is wrong, a monitoring thread should be created for each CPU
-	//the process needs to start a monitoring thread for each monitored thread
-	for (int i = 1; i < argc-1; i++) // -1 bcus last value is pid
-	{
-        int value = atoi(argv[i]);
-		
-		fd_store=perf_event_open(&pe,-1,value,-1,0); // perf_event_open(struct perf_event_attr *attr, pid_t pid, int cpu, int group_fd, unsigned long flags);
-		if (fd_store<0) 
-		{
-			if (!quiet) {
-				fprintf(stderr,"Problem opening leader %s\n",
-					strerror(errno));
-				//test_fail(test_string);
-			}
-		}
-		else{
-				printf("fd_store = perf event open for cpu no: %d\n", value);
-		}
-	
-		
-
-		fd_load=perf_event_open(&pe_load,-1,value,-1,0); // call perf event open and assign
-														 // it's fd number to an int variable
-		if (fd_load<0) //-1 means file descriptor didnt open
-		{
-			if (!quiet) 
-			{
-				fprintf(stderr,"Problem opening leader %s\n",
-					strerror(errno));
-				//test_fail(test_string);
-			}
-		}
-		else{printf("fd_load = perf event open for cpu no: %d\n", value);}
-	
-    
-	//mmap is described in global declarations at top
-	mmap_store=mmap(NULL, mmap_pages*4096, PROT_READ|PROT_WRITE, MAP_SHARED, fd_store, 0);
-
-	fcntl(fd_store, F_SETFL, O_RDWR|O_NONBLOCK|O_ASYNC); //no need to change
-	fcntl(fd_store, F_SETSIG, SIGIO);					 //send this PMU's signals to SIGIO channel(?)
-														 //this value and value of sigaction needs to match
-
-	fcntl(fd_store, F_SETOWN, getpid());				 //this makes the PMU send signals to this calling process
-														 //threads need to make this call with their own TID but the 
-														 //way its done is different
-														 //described in https://github.com/msasongko17/perf_event_modify_bp/blob/master/test3.c
-
-	ioctl(fd_store, PERF_EVENT_IOC_RESET, 0);
-
-	printf("fd store fcntl,ioctl calls done\n");
-
-	mmap_load=mmap(NULL, mmap_pages*4096, PROT_READ|PROT_WRITE, MAP_SHARED, fd_load, 0);
-
-	fcntl(fd_load, F_SETFL, O_RDWR|O_NONBLOCK|O_ASYNC);
-	fcntl(fd_load, F_SETSIG, SIGIO);
-	fcntl(fd_load, F_SETOWN, getpid());
-
-	ioctl(fd_load, PERF_EVENT_IOC_RESET, 0);
-
-	printf("fd load fcntl,ioctl calls done\n");
-	
-
-
-	ret=ioctl(fd_store, PERF_EVENT_IOC_ENABLE,0);
-
-	if (ret<0) {
-		if (!quiet) {
-			fprintf(stderr,"Error with PERF_EVENT_IOC_ENABLE "
-				"of group leader: %d %s\n",
-				errno,strerror(errno));
-			exit(1);
-		}
-		else{
-			printf("fd_store enabled\n");
-		}
-	}	
-
-
-	ret2=ioctl(fd_load, PERF_EVENT_IOC_ENABLE,0);
-
-	if (ret2<0) {
-		if (!quiet) {
-			fprintf(stderr,"Error with PERF_EVENT_IOC_ENABLE "
-				"of group leader: %d %s\n",
-				errno,strerror(errno));
-			exit(1);
-		}
-		else{
-			printf("fd_load enabled\n");
-		}
-	}
-
-	}
-
-	
-#pragma endregion
-
-
-
-/*
-////////////////////PMU ACTIVATION + IOC/FCNTL///////////////
-#pragma region 
-
-	
-	mmap_store=mmap(NULL, mmap_pages*4096, PROT_READ|PROT_WRITE, MAP_SHARED, fd_store, 0);
-
-	fcntl(fd_store, F_SETFL, O_RDWR|O_NONBLOCK|O_ASYNC);
-	fcntl(fd_store, F_SETSIG, SIGIO);
-	fcntl(fd_store, F_SETOWN, getpid());
-
-	ioctl(fd_store, PERF_EVENT_IOC_RESET, 0);
-
-	printf("fd store fcntl,ioctl calls done\n");
-
-	mmap_load=mmap(NULL, mmap_pages*4096, PROT_READ|PROT_WRITE, MAP_SHARED, fd_load, 0);
-
-	fcntl(fd_load, F_SETFL, O_RDWR|O_NONBLOCK|O_ASYNC);
-	fcntl(fd_load, F_SETSIG, SIGIO);
-	fcntl(fd_load, F_SETOWN, getpid());
-
-	ioctl(fd_load, PERF_EVENT_IOC_RESET, 0);
-
-	printf("fd load fcntl,ioctl calls done\n");
-	
-
-
-	ret=ioctl(fd_store, PERF_EVENT_IOC_ENABLE,0);
-
-	if (ret<0) {
-		if (!quiet) {
-			fprintf(stderr,"Error with PERF_EVENT_IOC_ENABLE "
-				"of group leader: %d %s\n",
-				errno,strerror(errno));
-			exit(1);
-		}
-		else{
-			printf("fd_store enabled\n");
-		}
-	}	
-
-
-	ret2=ioctl(fd_load, PERF_EVENT_IOC_ENABLE,0);
-
-	if (ret2<0) {
-		if (!quiet) {
-			fprintf(stderr,"Error with PERF_EVENT_IOC_ENABLE "
-				"of group leader: %d %s\n",
-				errno,strerror(errno));
-			exit(1);
-		}
-		else{
-			printf("fd_load enabled\n");
-		}
-	}
-
-#pragma endregion
-*/
-
-
-
-/////////////////////////WP SIGACTION///////////////////////////
-#pragma region
-
-//similiar to PMU sigaction
-struct sigaction sa_wp;
-
-memset(&sa_wp, 0, sizeof(struct sigaction));
-        sa_wp.sa_sigaction = wp_handler;
-        sa_wp.sa_flags = SA_SIGINFO;
-
-        if (sigaction( SIGRTMIN, &sa_wp, NULL) < 0) {
-                fprintf(stderr,"Error setting up WATCHPOINT signal handler\n");
+        if (sigaction( SIGIO, &sa, NULL) < 0) {
+                fprintf(stderr,"Error setting up signal handler\n");
                 exit(1);
         }
 
-#pragma endregion
+        /* Set up Instruction Event */
 
+        memset(&pe,0,sizeof(struct perf_event_attr));
 
+	sample_type=PERF_SAMPLE_IP|PERF_SAMPLE_IDENTIFIER|PERF_SAMPLE_ADDR;
+	read_format=0;
 
+        pe.type=PERF_TYPE_RAW;
+        pe.size=sizeof(struct perf_event_attr);
+        //pe.config=PERF_COUNT_HW_INSTRUCTIONS;
 
-/////////////////////////WP PERF EVENT///////////////////////
-#pragma region
+	 /* MEM_UOPS_RETIRED:ALL_STORES */
+	 //pe.config = 0x5382d0;
+	pe.config = 0x82d0;
 
+        pe.sample_period=SAMPLE_PERIOD;
+        pe.sample_type=sample_type;
 
+        pe.read_format=read_format;
+        pe.disabled=1;
+        pe.pinned=1;
+        pe.exclude_kernel=1;
+        pe.exclude_hv=1;
+        pe.wakeup_events=1;
+	pe.precise_ip=2;
 
-memset(&pe_wp,0,sizeof(struct perf_event_attr));
-	
-	pe_wp.bp_type=HW_BREAKPOINT_RW; //activate breakpoint on both read and write events
-	//pe_wp.bp_addr=(unsigned long)&sum;
-	pe_wp.bp_addr=(unsigned long)&unused; //address 
-	pe_wp.bp_len=sizeof(int); 			  //8bytes
-	pe_wp.type=PERF_TYPE_BREAKPOINT;
-	pe_wp.size=sizeof(struct perf_event_attr);
-	pe_wp.config=0;
-	pe_wp.sample_period=1;
-	pe_wp.sample_type=PERF_SAMPLE_ADDR|PERF_SAMPLE_TID|PERF_SAMPLE_TIME|PERF_SAMPLE_CPU;
-	pe_wp.wakeup_events=1;
-	pe_wp.disabled=1;
-	pe_wp.exclude_kernel=1;
-	pe_wp.exclude_hv=1;
+	//arch_adjust_domain(&pe,quiet);
 
-	//this needs to change for thread approach
-	for(int i = 0; i<4; i++){
-		fd_wp[i]=perf_event_open(&pe_wp, (pid_t)atoi(argv[1]),-1,-1,0); //(struct perf_event_attr *attr, pid_t pid, int cpu, int group_fd, unsigned long flags);
-		if (fd_wp[i]<0) {
-			fprintf(stderr,"Error opening leader %llx\n",pe_wp.config);
+	fd=perf_event_open(&pe,0,-1,-1,0);
+	if (fd<0) {
+		if (!quiet) {
+			fprintf(stderr,"Problem opening leader %s\n",
+				strerror(errno));
+			//test_fail(test_string);
 		}
-		else{
-			printf("File descriptor for WP no: %i opened\n",i);
-		}
-
 	}
-	
+	our_mmap=mmap(NULL, mmap_pages*4096,
+		PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
 
-	
+	fcntl(fd, F_SETFL, O_RDWR|O_NONBLOCK|O_ASYNC);
+	fcntl(fd, F_SETSIG, SIGIO);
+	fcntl(fd, F_SETOWN,getpid());
 
-#pragma endregion
+	ioctl(fd, PERF_EVENT_IOC_RESET, 0);
 
+	ret=ioctl(fd, PERF_EVENT_IOC_ENABLE,0);
 
-
-
-////////////////////WP ACTIVATION + IOC/FCNTL///////////////
-#pragma region
-
-//mmap_wp=mmap(NULL, (1+MMAP_PAGES)*getpagesize(),
-//				 PROT_READ|PROT_WRITE, MAP_SHARED, fd_wp, 0);
-	for(int i = 0; i<4; i++){
-
-	fcntl(fd_wp[i], F_SETFL, O_RDWR|O_NONBLOCK|O_ASYNC);
-	fcntl(fd_wp[i], F_SETSIG, SIGRTMIN); //values can be SIGIO, SIGRTMIN, SIGRTMIN+1, SIGRTMIN+2, SIGRTMIN+3
-										 //each wp signal should be sent through a different channel
-										 //these values need to be matched with sigaction's value
-	fcntl(fd_wp[i], F_SETOWN, getpid());
-	
-
-	ioctl(fd_wp[i], PERF_EVENT_IOC_RESET, 0);
-	ret_wp=ioctl(fd_wp[i], PERF_EVENT_IOC_DISABLE,0);
-
-	if (ret_wp<0) { fprintf(stderr,"Error with PERF_EVENT_IOC_DISABLE of one of the watchpoints: ""%d %s\n",errno,strerror(errno));}
-	
+	if (ret<0) {
+		if (!quiet) {
+			fprintf(stderr,"Error with PERF_EVENT_IOC_ENABLE "
+				"of group leader: %d %s\n",
+				errno,strerror(errno));
+			exit(1);
+		}
 	}
 
+       //naive_matrix_multiply(quiet);
+       int sum = 0, val = 1;
+        //for(int i = 0; i < 100000000; i++) {
+#if 0
+	__asm__ __volatile__ ("movl %1, %%ebx;"
+                                "addl %%ebx, %0;"
+                                : "=m" (sum)
+                                : "r" (val)
+                                : "%ebx");	
+#endif
+       __asm__ __volatile__ (
+		"movq $100000000, %%rcx;"
+                "movl $1, %%ebx;"
+                "loop0:;"
+                "addl %%ebx, %0;"
+		"subq $1, %%rcx;"
+                "cmpq $0, %%rcx;"
+                "jne loop0;"
+                : "=m" (sum)
+                :
+                : "%ebx", "%ecx");
+        //}
 
+#if  0
+		__asm__ __volatile__ ("movq $10000000000, %%rcx\\n\\t"
+                "movl $1, %%ebx\\n\\t"
+                "loop0:\\n\\t"
+                "movl %0, %%ebx\\n\\t"
+{% for i in range(iter_count) %}
+                {{ statement_ext }}
+{% endfor %}
+                "subq $1, %%rcx\\n\\t"
+		"cmpq $0, %%rcx\\n\\t "
+		"jne loop0\\n\\t"
+                : "=m" (val)
+                :
+                : "memory", "%ebx", "%ecx"
+            );
+        }
+#endif
 
+	ret=ioctl(fd, PERF_EVENT_IOC_REFRESH,0);
 
-
-
-#pragma endregion
-
-/*
-////////////////////////////MATRIX///////////////////////////////
-#pragma region
-	printf("matrix multiplication\n\n");
-
-	//naive_matrix_multiply(quiet);
-		
-	__asm__ __volatile__ (
-	"movq $100000000, %%rcx;"
-			"movl $1, %%ebx;"
-			"loop0:;"
-			"movl %%ebx, %0;"
-			"movl %1, %%ebx;"
-	"subq $1, %%rcx;"
-			"cmpq $0, %%rcx;"
-			"jne loop0;"
-			: "=m" (sum)
-			: "m" (val)
-			: "%ebx", "%ecx");
-	
-
-#pragma endregion
-*/
-
-
-
-#pragma region clean up
-while(1){
-           sleep(1); 
+	if (!quiet) {
+                printf("Counts %d, using mmap buffer %p\n",count_total,our_mmap);
         }
 
-	ret=ioctl(fd_store, PERF_EVENT_IOC_REFRESH,0);
-	printf("fd_store refresh\n");
-
-	ret2=ioctl(fd_load, PERF_EVENT_IOC_REFRESH,0);
-	printf("fd_load refresh\n");
-
-	for(int i = 0; i<4; i++){
-		ret2=ioctl(fd_wp[i], PERF_EVENT_IOC_REFRESH,0);
-	
-
-	}
-	
-	
-
-	if (!quiet) 
-		printf("Counts %d, using mmap store buffer %p\n",count_total_store,mmap_store);
-	if (!quiet) 
-		printf("Counts %d, using mmap load buffer %p\n",count_total_load,mmap_load);
-    
-
-	if (count_total_allSignal==0) 
-	{
+	if (count_total==0) {
 		if (!quiet) printf("No overflow events generated.\n");
 		//test_fail(test_string);
 	}
-	
+	munmap(our_mmap,mmap_pages*4096);
 
-	munmap(mmap_store,mmap_pages*4096);
-	munmap(mmap_load,mmap_pages*4096);
-
-	close(fd_store);
-	close(fd_load);
-	for(int i = 0; i<4; i++){
-
-	ioctl(fd_wp[i], PERF_EVENT_IOC_DISABLE,0);
-	
-	//read_result=read(fd_wp,&bp_counter,sizeof(long long));
-	close(fd_wp[i]);
-	}
-
+	close(fd);
 
 	//test_pass(test_string);
-#pragma endregion
-		
-        printf("Profiled program finished.\n");
-	
+
 	return 0;
-
-
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 /* Urgh who designed this interface */
 static int handle_struct_read_format(unsigned char *sample,
@@ -1626,11 +1009,8 @@ long long perf_mmap_read( void *our_mmap, int mmap_size,
 			}
 			if (sample_type & PERF_SAMPLE_TID) {
 				int pid, tid;
-
 				memcpy(&pid,&data[offset],sizeof(int));
 				memcpy(&tid,&data[offset+4],sizeof(int));
-				sampleTid = tid;
-				
 
 				if (validate) {
 					if (validate->pid!=pid) {
@@ -1652,7 +1032,7 @@ long long perf_mmap_read( void *our_mmap, int mmap_size,
 				offset+=8;
 			}
 			if (sample_type & PERF_SAMPLE_ADDR) {
-				//long long addr; --made global 
+				long long addr;
 				memcpy(&addr,&data[offset],sizeof(long long));
 				if (!quiet) printf("\tPERF_SAMPLE_ADDR, addr: %llx\n",addr);
 				offset+=8;
