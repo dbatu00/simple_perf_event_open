@@ -275,6 +275,7 @@ void freeList(node* head) {
 }
 */
 
+/*
 void init_thread_ids(){
     for(int i=0; i<MAX_THREADS; i++){
         thread_ids[i] = NULL_TID_VALUE; 
@@ -318,6 +319,7 @@ void printThreadList()
 	printf("\n-1 = empty\n");
 
 }
+*/
 
 #define CHECK(x) ({int err = (x); \
 if (err) { \
@@ -353,7 +355,6 @@ int test_quiet(void) {
 }
 
 
-//not specifically for store -- mmap_store naming is a mistake --
 long long perf_mmap_read(
                 void *our_mmap, int mmap_size, long long prev_head,
                 int sample_type, int read_format, long long reg_mask,
@@ -543,10 +544,10 @@ int main(int argc, char **argv)
 	char test_string[]="Testing pebs latency...";
 
 	quiet=test_quiet();
-	init_thread_ids();
+	//init_thread_ids();
 
 	
-
+	/*
 	printf("CPUs: ");
     for (int i = 1; i < argc; i++) {
         int value = atoi(argv[i]);
@@ -561,7 +562,11 @@ int main(int argc, char **argv)
 		}
         
     }
+	*/
 
+	//hard code only one CPU to check sending sample signals to the specified TID
+	
+	
 	if (!quiet) 
 		printf("\nThis tests the intel PEBS latency.\n");
 
