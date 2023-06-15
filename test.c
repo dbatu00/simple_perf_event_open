@@ -169,24 +169,16 @@ Linux interface
 // 100000
 
 #define MMAP_DATA_SIZE 8
-
 #define RAW_IBS_FETCH   1
 #define RAW_IBS_OP      2
-
 #define MMAP_PAGES 8
-
 #define CACHE_LINE_SIZE 64
-
 #define MAX_THREADS 20
-
 #define NULL_TID_VALUE -1
 
 typedef int TID_TYPE;
-
 typedef enum {false, true} bool;
-
 size_t test_function(size_t a, size_t b) __attribute__((noinline));
-
 size_t test_function(size_t a, size_t b) {
 
         size_t c;
@@ -206,7 +198,6 @@ static int count_total_load=0;
 static int count_total_allSignal=0;
 static char *mmap_store;
 static char *mmap_load;
-
 static char *mmap_wp;
 static char *mmap_storeList[MAX_THREADS];
 static char *mmap_loadList[MAX_THREADS];
@@ -417,7 +408,7 @@ static void wp_handler(int signum, siginfo_t *oh, void *blah) {
         (void) ret;
 
 }
-
+#pragma endregion
 
 static void our_handler(int signum, siginfo_t *info, void *uc) {
 
@@ -496,7 +487,7 @@ static void our_handler(int signum, siginfo_t *info, void *uc) {
 	ret=ioctl(fd, PERF_EVENT_IOC_REFRESH, 1);
 
 	
-	/*
+	
 	for(int i = 0; i<4; i++){
 		long long bpAddr = (unsigned long long)get_first_cache_line_address(addr)+(i*8);
 		pe_wp.bp_addr = bpAddr;
@@ -514,7 +505,7 @@ static void our_handler(int signum, siginfo_t *info, void *uc) {
 		
 
 	}
-	*/
+	
 	//CHECK(ioctl(fd_wp, PERF_EVENT_IOC_MODIFY_ATTRIBUTES, (unsigned long) (&pe_wp)));
 	
 
@@ -524,17 +515,212 @@ static void our_handler(int signum, siginfo_t *info, void *uc) {
 	printf("*********SIGNAL HANDLER - END*********\n\n\n");
 
 	(void) ret;
-	
-
 }
 
 
+/*
+void handle_perf_event(int signum, siginfo_t* siginfo, void* ucontext) {
+    printf("Received perf event signal: %d, Address: %p, CPU: %d\n", signum, siginfo->si_addr, siginfo->si_cpu);
+}
+*/
+
+void handle_perf_event(int signum, siginfo_t* siginfo, void* ucontext) {
+    //printf("Received perf event signal: %d, Address: %p, CPU: %d\n", signum, siginfo->si_addr, siginfo->si_cpu);
+
+	int ret;
+
+	int fd = siginfo->si_fd;
+	
+	printf("*********SIGNAL HANDLER - START*********\n");
+
+
+	ret=ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
+	
+	//printf("sum=%d, value=%d\n", sum, val);
+	
+	prev_head_load=perf_mmap_read(mmap_load,
+							 MMAP_DATA_SIZE,
+							 prev_head_load,
+							 sample_type,read_format,
+							 0, /* reg_mask */
+							 NULL, /*validate */
+							 quiet,
+							 NULL, /* events read */
+							 0);
+
+
+
+	count_total_allSignal++;
+	printf("Sample count %d\n", count_total_allSignal);
+
+
+	ret=ioctl(fd, PERF_EVENT_IOC_REFRESH, 1);
+
+	printf("*********SIGNAL HANDLER - END*********\n\n\n");
+
+	(void) ret;
+
+}
+
+	
+
+// Function executed by the threads
+void* threadFunction(void* arg) {
+
+	//CPU = logical thread
+
+    
+	int fd;
+	int CPU = *(int*)arg;
+    printf("Thread ID:%lu | monitored CPU: %d\n", pthread_self(), CPU);
+
+
+/////////////////////////PMU SIGACTION//////////////////////////
+#pragma region
+	struct sigaction sa;
+
+	memset(&sa, 0, sizeof(struct sigaction));
+	//sa.sa_sigaction = our_handler;
+
+	sa.sa_sigaction = handle_perf_event;
+	sa.sa_flags = SA_SIGINFO;
+	sigemptyset(&sa.sa_mask);
+
+	if (sigaction( SIGIO, &sa, NULL) < 0) 
+	{
+			fprintf(stderr,"Error setting up signal handler\n");
+			exit(1);
+	}
+
+
+#pragma endregion
+
+////////////////////PMU PERF EVENT/////////////////////////////////
+#pragma region stores
+/*
+	struct perf_event_attr pe;
+
+	memset(&pe,0,sizeof(struct perf_event_attr));
+
+	sample_type=PERF_SAMPLE_ADDR|PERF_SAMPLE_TID|PERF_SAMPLE_TIME|PERF_SAMPLE_CPU;
+	read_format=0;
+
+	pe.type=PERF_TYPE_RAW;					
+	pe.size=sizeof(struct perf_event_attr); ,
+	
+
+	//MEM_UOPS_RETIRED:ALL_STORES	 
+ 	//pe.config = 0x5382d0;			 
+	//pe.config = 0x82d0;			 
+	pe.config = 0x82d0; 			 
+
+	pe.sample_period=SAMPLE_PERIOD;   
+	pe.sample_type=sample_type;		 
+	pe.read_format=read_format; 	 
+	pe.disabled=1;					 
+	pe.pinned=1;					 
+	pe.exclude_kernel=1;			 
+	pe.exclude_hv=1; 				 
+	pe.wakeup_events=1;				 
+	pe.precise_ip=2;
+*/
+#pragma endregion
+
+#pragma region loads
+	struct perf_event_attr pe_load;
+	memset(&pe_load,0,sizeof(struct perf_event_attr));
+
+	pe_load.type=PERF_TYPE_RAW;
+	pe_load.size=sizeof(struct perf_event_attr);
+	
+
+	//MEM_UOPS_RETIRED:ALL_LOADS 
+	//pe.config = 0x5381d0;
+	//pe.config = 0x81d0;	
+	pe_load.config = 0x81d0;				 
+
+	pe_load.sample_period=SAMPLE_PERIOD;
+	pe_load.sample_type=sample_type;
+	pe_load.read_format=read_format;
+	pe_load.disabled=1;
+	pe_load.pinned=1;
+	pe_load.exclude_kernel=1;
+	pe_load.exclude_hv=1;
+	pe_load.wakeup_events=1;
+
+#pragma endregion
+
+////////////////////PMU PERF OPEN/////////////////////////////////
+#pragma region 
+
+	
+	fd = syscall(__NR_perf_event_open, &(pe_load), -1, CPU, -1, 0); // perf_event_open(struct perf_event_attr *attr, pid_t pid, int cpu, int group_fd, unsigned long flags);
+		if (fd<0) 
+		{
+			if (!quiet) {
+				fprintf(stderr,"Problem opening leader %s\n",
+					strerror(errno));
+				//test_fail(test_string);
+			}
+		}
+		else{
+				printf("fd_load = perf event open for cpu no: %d by monitoring thread :%lu\n", CPU, pthread_self());
+		}
+	
+
+
+
+
+#pragma endregion
+
+ while (1) {
+        sleep(1);
+    }
+}
+
+
+
+   
 
 
 int main(int argc, char **argv) 
 {
 	 
+	pthread_t thread1, thread2;
+    int arg1 = 0;
+    int arg2 = 1;
 
+    // Create thread 1
+    if (pthread_create(&thread1, NULL, threadFunction, &arg1) != 0) {
+        printf("Failed to create thread 1\n");
+        return 1;
+    }
+
+    // Create thread 2
+    if (pthread_create(&thread2, NULL, threadFunction, &arg2) != 0) {
+        printf("Failed to create thread 2\n");
+        return 1;
+    }
+
+    // Wait for thread 1 to finish
+    if (pthread_join(thread1, NULL) != 0) {
+        printf("Failed to join thread 1\n");
+        return 1;
+    }
+
+    // Wait for thread 2 to finish
+    if (pthread_join(thread2, NULL) != 0) {
+        printf("Failed to join thread 2\n");
+        return 1;
+    }
+
+    printf("Threads completed\n");
+    
+
+
+////////////////////old main init///////////////
+#pragma region 
+/*
 	int ret,ret2,ret_wp;
 	int fd_store,fd_load;
 	int mmap_pages=1+MMAP_DATA_SIZE;
@@ -547,7 +733,7 @@ int main(int argc, char **argv)
 	//init_thread_ids();
 
 	
-	/*
+	
 	printf("CPUs: ");
     for (int i = 1; i < argc; i++) {
         int value = atoi(argv[i]);
@@ -562,66 +748,18 @@ int main(int argc, char **argv)
 		}
         
     }
-	*/
+	
 
 	//hard code only one CPU to check sending sample signals to the specified TID
 	
 	
 	if (!quiet) 
 		printf("\nThis tests the intel PEBS latency.\n");
+*/
+#pragma endregion	
 
-	
-
-
-
-/////////////////////////PMU SIGACTION//////////////////////////
-#pragma region
-	struct sigaction sa;
-
-	memset(&sa, 0, sizeof(struct sigaction));
-	sa.sa_sigaction = our_handler;
-	sa.sa_flags = SA_SIGINFO;
-
-	if (sigaction( SIGIO, &sa, NULL) < 0) 
-	{
-			fprintf(stderr,"Error setting up signal handler\n");
-			exit(1);
-	}
-#pragma endregion
-
-
-
-
-////////////////////PMU PERF EVENT/////////////////////////////////
-#pragma region
-	struct perf_event_attr pe,pe_load;
-
-	memset(&pe,0,sizeof(struct perf_event_attr));
-	memset(&pe_load,0,sizeof(struct perf_event_attr));
-
-	sample_type=PERF_SAMPLE_ADDR|PERF_SAMPLE_TID|PERF_SAMPLE_TIME|PERF_SAMPLE_CPU;
-	read_format=0;
-
-	pe.type=PERF_TYPE_RAW;					pe_load.type=PERF_TYPE_RAW;
-	pe.size=sizeof(struct perf_event_attr); pe_load.size=sizeof(struct perf_event_attr);
-	
-
-	//MEM_UOPS_RETIRED:ALL_STORES	 MEM_UOPS_RETIRED:ALL_LOADS 
- 	//pe.config = 0x5382d0;			 pe.config = 0x5381d0;
-	//pe.config = 0x82d0;			 pe.config = 0x81d0;	
-	pe.config = 0x82d0; 			 pe_load.config = 0x81d0;
-
-	pe.sample_period=SAMPLE_PERIOD;  pe_load.sample_period=SAMPLE_PERIOD; 
-	pe.sample_type=sample_type;		 pe_load.sample_type=sample_type;
-	pe.read_format=read_format; 	 pe_load.read_format=read_format;
-	pe.disabled=1;					 pe_load.disabled=1;
-	pe.pinned=1;					 pe_load.pinned=1;
-	pe.exclude_kernel=1;			 pe_load.exclude_kernel=1;
-	pe.exclude_hv=1; 				 pe_load.exclude_hv=1;
-	pe.wakeup_events=1;				 pe_load.wakeup_events=1;
-	pe.precise_ip=2;				 pe_load.precise_ip=2;
-
-	#pragma region perf event guide
+////////////////////perf event guide///////////////
+#pragma region 
 	/*
 	 pid == 0 and cpu == -1
               This measures the calling process/thread on any CPU.
@@ -646,6 +784,9 @@ int main(int argc, char **argv)
 	*/
 	#pragma endregion
 
+////////////////////old perf event opens//////////////
+#pragma region
+/*
 	for (int i = 1; i < argc-1; i++) // -1 bcus last value is pid
 	{
         int value = atoi(argv[i]);
@@ -679,68 +820,63 @@ int main(int argc, char **argv)
 	
     
 
-	mmap_store=mmap(NULL, mmap_pages*4096, PROT_READ|PROT_WRITE, MAP_SHARED, fd_store, 0);
+		mmap_store=mmap(NULL, mmap_pages*4096, PROT_READ|PROT_WRITE, MAP_SHARED, fd_store, 0);
 
-	fcntl(fd_store, F_SETFL, O_RDWR|O_NONBLOCK|O_ASYNC);
-	fcntl(fd_store, F_SETSIG, SIGIO);
-	fcntl(fd_store, F_SETOWN, getpid());
+		fcntl(fd_store, F_SETFL, O_RDWR|O_NONBLOCK|O_ASYNC);
+		fcntl(fd_store, F_SETSIG, SIGIO);
+		fcntl(fd_store, F_SETOWN, getpid());
 
-	ioctl(fd_store, PERF_EVENT_IOC_RESET, 0);
+		ioctl(fd_store, PERF_EVENT_IOC_RESET, 0);
 
-	printf("fd store fcntl,ioctl calls done\n");
+		printf("fd store fcntl,ioctl calls done\n");
 
-	mmap_load=mmap(NULL, mmap_pages*4096, PROT_READ|PROT_WRITE, MAP_SHARED, fd_load, 0);
+		mmap_load=mmap(NULL, mmap_pages*4096, PROT_READ|PROT_WRITE, MAP_SHARED, fd_load, 0);
 
-	fcntl(fd_load, F_SETFL, O_RDWR|O_NONBLOCK|O_ASYNC);
-	fcntl(fd_load, F_SETSIG, SIGIO);
-	fcntl(fd_load, F_SETOWN, getpid());
+		fcntl(fd_load, F_SETFL, O_RDWR|O_NONBLOCK|O_ASYNC);
+		fcntl(fd_load, F_SETSIG, SIGIO);
+		fcntl(fd_load, F_SETOWN, getpid());
 
-	ioctl(fd_load, PERF_EVENT_IOC_RESET, 0);
+		ioctl(fd_load, PERF_EVENT_IOC_RESET, 0);
 
-	printf("fd load fcntl,ioctl calls done\n");
-	
-
-
-	ret=ioctl(fd_store, PERF_EVENT_IOC_ENABLE,0);
-
-	if (ret<0) {
-		if (!quiet) {
-			fprintf(stderr,"Error with PERF_EVENT_IOC_ENABLE "
-				"of group leader: %d %s\n",
-				errno,strerror(errno));
-			exit(1);
-		}
-		else{
-			printf("fd_store enabled\n");
-		}
-	}	
+		printf("fd load fcntl,ioctl calls done\n");
+		
 
 
-	ret2=ioctl(fd_load, PERF_EVENT_IOC_ENABLE,0);
+		ret=ioctl(fd_store, PERF_EVENT_IOC_ENABLE,0);
 
-	if (ret2<0) {
-		if (!quiet) {
-			fprintf(stderr,"Error with PERF_EVENT_IOC_ENABLE "
-				"of group leader: %d %s\n",
-				errno,strerror(errno));
-			exit(1);
-		}
-		else{
-			printf("fd_load enabled\n");
+		if (ret<0) {
+			if (!quiet) {
+				fprintf(stderr,"Error with PERF_EVENT_IOC_ENABLE "
+					"of group leader: %d %s\n",
+					errno,strerror(errno));
+				exit(1);
+			}
+			else{
+				printf("fd_store enabled\n");
+			}
+		}	
+
+
+		ret2=ioctl(fd_load, PERF_EVENT_IOC_ENABLE,0);
+
+		if (ret2<0) {
+			if (!quiet) {
+				fprintf(stderr,"Error with PERF_EVENT_IOC_ENABLE "
+					"of group leader: %d %s\n",
+					errno,strerror(errno));
+				exit(1);
+			}
+			else{
+				printf("fd_load enabled\n");
+			}
 		}
 	}
-
-	}
-
-	
+*/ 
 #pragma endregion
 
-
-
-/*
 ////////////////////PMU ACTIVATION + IOC/FCNTL///////////////
 #pragma region 
-
+/*
 	
 	mmap_store=mmap(NULL, mmap_pages*4096, PROT_READ|PROT_WRITE, MAP_SHARED, fd_store, 0);
 
@@ -792,15 +928,12 @@ int main(int argc, char **argv)
 			printf("fd_load enabled\n");
 		}
 	}
-
-#pragma endregion
 */
-
-
+#pragma endregion
 
 /////////////////////////WP SIGACTION///////////////////////////
 #pragma region
-
+/*
 struct sigaction sa_wp;
 
 memset(&sa_wp, 0, sizeof(struct sigaction));
@@ -813,15 +946,10 @@ memset(&sa_wp, 0, sizeof(struct sigaction));
         }
 
 #pragma endregion
-
-
-
-
+*/
 /////////////////////////WP PERF EVENT///////////////////////
 #pragma region
-
-
-
+/*
 memset(&pe_wp,0,sizeof(struct perf_event_attr));
 	pe_wp.type=PERF_TYPE_BREAKPOINT;
 	pe_wp.size=sizeof(struct perf_event_attr);
@@ -845,19 +973,13 @@ memset(&pe_wp,0,sizeof(struct perf_event_attr));
 		else{
 			printf("File descriptor for WP no: %i opened\n",i);
 		}
-
-	}
-	
-
-	
-
+	}	
+*/
 #pragma endregion
-
-
-
 
 ////////////////////WP ACTIVATION + IOC/FCNTL///////////////
 #pragma region
+/*
 
 //mmap_wp=mmap(NULL, (1+MMAP_PAGES)*getpagesize(),
 //				 PROT_READ|PROT_WRITE, MAP_SHARED, fd_wp, 0);
@@ -874,17 +996,12 @@ memset(&pe_wp,0,sizeof(struct perf_event_attr));
 	if (ret_wp<0) { fprintf(stderr,"Error with PERF_EVENT_IOC_DISABLE of one of the watchpoints: ""%d %s\n",errno,strerror(errno));}
 	
 	}
-
-
-
-
-
-
+*/
 #pragma endregion
 
-/*
 ////////////////////////////MATRIX///////////////////////////////
 #pragma region
+/*
 	printf("matrix multiplication\n\n");
 
 	//naive_matrix_multiply(quiet);
@@ -902,13 +1019,12 @@ memset(&pe_wp,0,sizeof(struct perf_event_attr));
 			: "m" (val)
 			: "%ebx", "%ecx");
 	
-
-#pragma endregion
 */
+#pragma endregion
 
-
-
-#pragma region clean up
+////////////////////////////clean up///////////////////////////////
+#pragma region 
+/*
 while(1){
            sleep(1); 
         }
@@ -955,33 +1071,13 @@ while(1){
 
 
 	//test_pass(test_string);
+*/
 #pragma endregion
 		
-        printf("Profiled program finished.\n");
+    printf("Profiled program finished.\n");
 	
 	return 0;
-
-
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
