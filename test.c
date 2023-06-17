@@ -524,9 +524,14 @@ void handle_perf_event(int signum, siginfo_t* siginfo, void* ucontext) {
 }
 */
 
+__thread int CPUx;
+
 void handle_perf_event(int signum, siginfo_t* siginfo, void* ucontext) {
     //printf("Received perf event signal: %d, Address: %p, CPU: %d\n", signum, siginfo->si_addr, siginfo->si_cpu);
 
+	extern __thread int CPUx;  // Declare the thread-specific CPU variable from the thread function
+
+    printf("CPU: %d\n", CPUx);
 	int ret;
 
 	int fd = siginfo->si_fd;
@@ -572,6 +577,7 @@ void* threadFunction(void* arg) {
     
 	int fd;
 	int CPU = *(int*)arg;
+	CPUx = *(int*)arg;
     printf("Thread ID:%lu | monitored CPU: %d\n", pthread_self(), CPU);
 
 
@@ -729,8 +735,8 @@ int main(int argc, char **argv)
 {
 	 
 	pthread_t thread1, thread2;
-    int arg1 = 0;
-    int arg2 = 1;
+    int arg1 = 2;
+    int arg2 = 3;
 
     // Create thread 1
     if (pthread_create(&thread1, NULL, threadFunction, &arg1) != 0) {
