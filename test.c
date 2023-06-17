@@ -584,9 +584,9 @@ void* threadFunction(void* arg) {
 
 	sa.sa_sigaction = handle_perf_event;
 	sa.sa_flags = SA_SIGINFO;
-	sigemptyset(&sa.sa_mask);
+	//sigemptyset(&sa.sa_mask);
 
-	if (sigaction( SIGIO, &sa, NULL) < 0) 
+	if (sigaction( SIGRTMIN, &sa, NULL) < 0) 
 	{
 			fprintf(stderr,"Error setting up signal handler\n");
 			exit(1);
@@ -664,7 +664,7 @@ void* threadFunction(void* arg) {
 			}
 		}
 		else{
-				printf("fd_load = perf event open for cpu no: %d by monitoring thread :%lu\n", CPU, pthread_self());
+				printf("fd= perf event open for cpu no: %d by monitoring thread :%lu\n", CPU, pthread_self());
 		}
 	
 
@@ -673,6 +673,48 @@ void* threadFunction(void* arg) {
 
 #pragma endregion
 
+
+/////////////////////IOCTL FCNTL CALLS///////////////////////////
+#pragma region 
+	int mmap_pages=1+MMAP_DATA_SIZE;
+
+	mmap_load=mmap(NULL, mmap_pages*4096, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
+
+	fcntl(fd, F_SETFL, O_RDWR|O_NONBLOCK|O_ASYNC);
+	fcntl(fd, F_SETSIG, SIGRTMIN);
+	//fcntl(fd, F_SETOWN, syscall(__NR_gettid));
+	struct f_owner_ex fown_ex;
+    fown_ex.type = F_OWNER_TID;
+    fown_ex.pid = syscall(__NR_gettid);
+    if (fcntl(fd, F_SETOWN_EX, &fown_ex) == -1) {
+        perror("fcntl");
+        close(fd);
+        pthread_exit(NULL);
+    }
+
+	ioctl(fd, PERF_EVENT_IOC_RESET, 0);
+
+	printf("fd fcntl,ioctl calls done\n");
+	
+
+
+	int ret=ioctl(fd, PERF_EVENT_IOC_ENABLE,0);
+
+	if (ret<0) {
+		if (!quiet) {
+			fprintf(stderr,"Error with PERF_EVENT_IOC_ENABLE "
+				"of group leader: %d %s\n",
+				errno,strerror(errno));
+			exit(1);
+		}
+		else{
+			printf("fd enabled\n");
+		}
+	}	
+
+
+	
+#pragma endregion
  while (1) {
         sleep(1);
     }
