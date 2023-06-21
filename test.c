@@ -197,7 +197,7 @@ static int count_total_store=0;
 static int count_total_load=0;
 static int count_total_allSignal=0;
 static char *mmap_store;
-static char *mmap_load;
+//static char *mmap_load;
 static char *mmap_wp;
 static char *mmap_storeList[MAX_THREADS];
 static char *mmap_loadList[MAX_THREADS];
@@ -205,7 +205,7 @@ static long sample_type;
 static long read_format;
 static int quiet;
 static long long prev_head_store;
-static long long prev_head_load;
+//static long long prev_head_load;
 static int sum = 0, val = 1, unused = 5;
 int *ptr = &unused;
 static long long addr; //memcpy(&addr,&data[offset],sizeof(long long));
@@ -525,21 +525,28 @@ void handle_perf_event(int signum, siginfo_t* siginfo, void* ucontext) {
 */
 
 __thread int CPUx;
+//__thread char* mmap_load;
+
 
 void handle_perf_event(int signum, siginfo_t* siginfo, void* ucontext) {
     //printf("Received perf event signal: %d, Address: %p, CPU: %d\n", signum, siginfo->si_addr, siginfo->si_cpu);
 
 	extern __thread int CPUx;  // Declare the thread-specific CPU variable from the thread function
-
+	char* mmap_load;
+	int mmap_pages=1+MMAP_DATA_SIZE;
+	long long prev_head_load;
+	
     printf("CPU: %d\n", CPUx);
 	int ret;
 
 	int fd = siginfo->si_fd;
+
+	mmap_load=mmap(NULL, mmap_pages*4096, PROT_READ|PROT_WRITE, MAP_PRIVATE, fd, 0);
 	
 	printf("*********SIGNAL HANDLER - START*********\n");
 
 
-	ret=ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
+	//ret=ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
 	
 	//printf("sum=%d, value=%d\n", sum, val);
 	
@@ -560,6 +567,12 @@ void handle_perf_event(int signum, siginfo_t* siginfo, void* ucontext) {
 
 
 	ret=ioctl(fd, PERF_EVENT_IOC_REFRESH, 1);
+	
+	munmap(mmap_load,mmap_pages*4096);
+	
+
+	//close(fd);
+	
 
 	printf("*********SIGNAL HANDLER - END*********\n\n\n");
 
@@ -573,8 +586,7 @@ void handle_perf_event(int signum, siginfo_t* siginfo, void* ucontext) {
 void* threadFunction(void* arg) {
 
 	//CPU = logical thread
-
-    
+   
 	int fd;
 	int CPU = *(int*)arg;
 	CPUx = *(int*)arg;
@@ -636,7 +648,7 @@ void* threadFunction(void* arg) {
 	struct perf_event_attr pe_load;
 	memset(&pe_load,0,sizeof(struct perf_event_attr));
 
-	pe_load.type=PERF_TYPE_RAW;
+	sample_type=PERF_SAMPLE_ADDR|PERF_SAMPLE_TID|PERF_SAMPLE_TIME|PERF_SAMPLE_CPU;
 	pe_load.size=sizeof(struct perf_event_attr);
 	
 
@@ -644,7 +656,8 @@ void* threadFunction(void* arg) {
 	//pe.config = 0x5381d0;
 	//pe.config = 0x81d0;	
 	pe_load.config = 0x81d0;				 
-
+	read_format=0;
+	pe_load.type=PERF_TYPE_RAW;
 	pe_load.sample_period=SAMPLE_PERIOD;
 	pe_load.sample_type=sample_type;
 	pe_load.read_format=read_format;
@@ -653,6 +666,7 @@ void* threadFunction(void* arg) {
 	pe_load.exclude_kernel=1;
 	pe_load.exclude_hv=1;
 	pe_load.wakeup_events=1;
+	pe_load.precise_ip=2;
 
 #pragma endregion
 
@@ -670,7 +684,7 @@ void* threadFunction(void* arg) {
 			}
 		}
 		else{
-				printf("fd= perf event open for cpu no: %d by monitoring thread :%lu\n", CPU, pthread_self());
+				printf("fd=perf event open for cpu no: %d by monitoring thread :%lu\n", CPU, pthread_self());
 		}
 	
 
@@ -682,9 +696,9 @@ void* threadFunction(void* arg) {
 
 /////////////////////IOCTL FCNTL CALLS///////////////////////////
 #pragma region 
-	int mmap_pages=1+MMAP_DATA_SIZE;
+	//int mmap_pages=1+MMAP_DATA_SIZE;
 
-	mmap_load=mmap(NULL, mmap_pages*4096, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
+	//mmap_load=mmap(NULL, mmap_pages*4096, PROT_READ|PROT_WRITE, MAP_PRIVATE, fd, 0);
 
 	fcntl(fd, F_SETFL, O_RDWR|O_NONBLOCK|O_ASYNC);
 	fcntl(fd, F_SETSIG, SIGRTMIN);
@@ -772,6 +786,7 @@ int main(int argc, char **argv)
 	int ret,ret2,ret_wp;
 	int fd_store,fd_load;
 	int mmap_pages=1+MMAP_DATA_SIZE;
+	
 	long long bp_counter;
 	//printf("sum address= %p, val address = %p\n", (void*)&sum, (void*)&val);
 
